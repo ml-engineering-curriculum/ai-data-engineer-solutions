@@ -8,3 +8,4 @@
 | 2026-11-12 | `fill-mod-103-web-scale-acquisition-and-curation-solutions` | `mod-103-web-scale-acquisition-and-curation` | Fill mod-103-web-scale-acquisition-and-curation module exercise solutions |
 | 2026-11-13 | `fill-mod-104-data-quality-measurement-and-audit-solutions` | `mod-104-data-quality-measurement-and-audit` | Fill mod-104-data-quality-measurement-and-audit module exercise solutions |
 | 2026-11-15 | `fill-mod-105-deduplication-at-scale-solutions` | `mod-105-deduplication-at-scale` | Fill mod-105-deduplication-at-scale module exercise solutions |
+| 2026-11-16 | `fill-mod-101-ai-data-governance-and-position-solutions` | `mod-101-ai-data-governance-and-position` | Fill mod-101-ai-data-governance-and-position module exercise solutions |
