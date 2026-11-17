@@ -9,3 +9,4 @@
 | 2026-11-13 | `fill-mod-104-data-quality-measurement-and-audit-solutions` | `mod-104-data-quality-measurement-and-audit` | Fill mod-104-data-quality-measurement-and-audit module exercise solutions |
 | 2026-11-15 | `fill-mod-105-deduplication-at-scale-solutions` | `mod-105-deduplication-at-scale` | Fill mod-105-deduplication-at-scale module exercise solutions |
 | 2026-11-16 | `fill-mod-101-ai-data-governance-and-position-solutions` | `mod-101-ai-data-governance-and-position` | Fill mod-101-ai-data-governance-and-position module exercise solutions |
+| 2026-11-17 | `fill-mod-106-benchmark-contamination-and-decontamination-solutions` | `mod-106-benchmark-contamination-and-decontamination` | Fill mod-106-benchmark-contamination-and-decontamination module exercise solutions |
