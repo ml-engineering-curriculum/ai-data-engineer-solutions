@@ -2,14 +2,14 @@
 
 ML Engineering Curriculum · Level 30 · [learning](https://github.com/ml-engineering-curriculum/ai-data-engineer-learning) · [solutions](https://github.com/ml-engineering-curriculum/ai-data-engineer-solutions)
 
-_Generated 2026-11-15 by `aicg org completeness`._
+_Generated 2026-11-18 by `aicg org completeness`._
 
-**Overall: 66%**
+**Overall: 70%**
 
 | | Progress | Count |
 |---|---|---|
 | Learning | `██████████` 100% | 12/12 modules complete |
-| Solutions | `███░░░░░░░` 31% | 19/61 exercises solved |
+| Solutions | `████░░░░░░` 41% | 25/61 exercises solved |
 
 ## Modules
 
@@ -21,7 +21,7 @@ _Generated 2026-11-15 by `aicg org completeness`._
 | `mod-104-data-quality-measurement-and-audit` | ✅ Complete | 23,559 | 8 | 5 | — | 5/5 |
 | `mod-105-deduplication-at-scale` | ✅ Complete | 23,262 | 8 | 5 | — | 5/5 |
 | `mod-106-benchmark-contamination-and-decontamination` | ✅ Complete | 26,809 | 8 | 5 | — | 0/5 |
-| `mod-107-labeling-operations-and-annotation-programs` | ✅ Complete | 24,977 | 9 | 6 | — | 0/6 |
+| `mod-107-labeling-operations-and-annotation-programs` | ✅ Complete | 24,977 | 9 | 6 | — | 6/6 |
 | `mod-108-synthetic-data-generation-at-production-scale` | ✅ Complete | 25,914 | 10 | 6 | — | 0/6 |
 | `mod-109-dataset-versioning-lineage-reproducibility` | ✅ Complete | 24,633 | 9 | 5 | — | 0/5 |
 | `mod-110-pii-and-privacy-risk-for-training-data` | ✅ Complete | 25,928 | 9 | 5 | — | 0/5 |
