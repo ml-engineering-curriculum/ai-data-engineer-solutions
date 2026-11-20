@@ -514,7 +514,7 @@ critical rows.
 | 10 | Each synthetic.parquet records `source_model_dir` for lineage                                                        | Yes       |
 | 11 | `reports/ablation_report.md` includes a three-panel plot per α setting                                                | No        |
 | 12 | Anchor-ratio sweep comparison summarises first-breach generation per α                                               | No        |
-| 13 | KL is computed as `KL(gen_0 || gen_N)`, not the reverse direction                                                     | Yes       |
+| 13 | KL is computed as `KL(gen_0 \|\| gen_N)`, not the reverse direction                                                   | Yes       |
 | 14 | Governance anchors (OWASP ML Top 10 ML02, MITRE ATLAS AML.T0020, NIST AI RMF MEASURE 2.3 / MEASURE 4.2 / MANAGE 2.3 / GOVERN 1.2) cited | No |
 | 15 | Unverifiable claims marked `<!-- pending-verify: ... -->`                                                           | Yes       |
 
