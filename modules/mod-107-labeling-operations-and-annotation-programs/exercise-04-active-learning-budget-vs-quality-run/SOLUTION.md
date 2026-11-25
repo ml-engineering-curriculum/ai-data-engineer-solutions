@@ -1,51 +1,81 @@
 # Exercise 04 — Active Learning Budget-vs-Quality Run (Solution)
 
+> **Exercise-prompt note.** The paired learning file
+> (`exercise-04-active-learning-budget-vs-quality-run.md`) is not
+> visible from the solutions repo at generation time. This
+> solution is grounded in the exercise title, the module README,
+> and the official sources cited in §6 (Settles 2009 survey,
+> scikit-learn user guide for active-learning baselines, Label
+> Studio ML-backend documentation). Any divergence from the
+> exercise prompt once it is pinned should re-ground against
+> those sources.
+> <!-- pending-verify: re-check against the exercise prompt once
+> the learning file is reachable to confirm the dataset shape
+> and the query-strategy palette. -->
+
 ## 1. Solution overview
 
-This is an **implementation** exercise. The learner runs a controlled
-experiment that compares **uncertainty-based active learning** against
-**uniform random sampling** at matched labeling budgets, producing a
-reproducible budget-vs-quality curve. The output is not a one-off
-accuracy number — it is a **decision artifact**: the labeling
-program uses the curve to choose how many items to send to annotators
-in each round, and to detect when the active-learning policy stops
-paying for itself.
+This is an **implementation** exercise. The learner runs an
+**active-learning (AL) budget-vs-quality experiment**: starting
+from a seed labeled set, they train a classifier, use an
+acquisition strategy to pick the next `B` unlabeled items,
+simulate labeling them against a held-out gold pool, retrain,
+and repeat. The deliverable is a `budget_curve.csv` and a
+`run_report.yaml` that compare at least three acquisition
+strategies against a random baseline, plus an operational plug-
+in to Exercise 01's Label Studio project so the same pipeline
+runs against real labelers.
+
+Three acquisition strategies are in scope:
+
+- **Random sampling** — the baseline. Any strategy that does not
+  beat random is not worth deploying.
+- **Uncertainty sampling (least confidence / margin / entropy).**
+  The default active-learning strategy per Settles (2009).
+- **Query-by-committee (QBC)** — bag of classifiers, pick items
+  with highest vote disagreement.
 
 Deliverables:
 
-- A seed pool + unlabeled pool loaded from a labeled corpus (the
-  "labels" are held back and used as an oracle at selection time;
-  this simulates annotation).
-- At least **two selection strategies**: `random` (baseline) and an
-  `uncertainty` strategy (e.g., least-confidence or margin for
-  classification). A third strategy (`entropy`) is highly
-  recommended for defensible curves.
-- A **round-based driver** that, at each round, trains a model on
-  the current labeled set, scores the unlabeled pool, selects the
-  next `k` items, "labels" them from the oracle, retrains, and
-  evaluates on a held-out test set.
-- A `runs/run_metrics.parquet` + `runs/budget_vs_quality.svg` curve.
-- A `report.md` stating the **crossover budget** (the budget at
-  which active learning beats random by a reviewer-accepted
-  margin), the **saturation point** (where the curve flattens),
-  and a **recommended labeling-round size** justified by the
-  curve.
-- A pytest suite that pins the metric outputs on a seeded fixture
-  so the whole run is byte-reproducible.
+- `code/dataset.py` — splits the corpus into seed, pool, gold.
+- `code/model.py` — a small, cheap classifier (logistic
+  regression on a bag-of-words or a frozen-embedding linear
+  head). The model is intentionally cheap so budget decisions
+  are not dominated by model choice.
+- `code/strategies.py` — one function per acquisition strategy.
+- `code/run.py` — the budget-vs-quality loop; writes
+  `budget_curve.csv`.
+- `code/plot.py` — renders `budget_curve.png` from the CSV.
+- `code/ls_backend.py` — a Label Studio ML-backend adapter that
+  serves the same strategies against a live Label Studio project.
+- `outputs/budget_curve.csv` — one row per (strategy, budget_step).
+- `outputs/run_report.yaml` — §1 identity, §2 experiment design,
+  §3 per-strategy final accuracy + area under the curve, §4
+  per-step rows, §5 statistical tests, §6 recommendation, §7
+  pending-review.
+- `tests/` — determinism tests, oracle-labeling tests, and
+  strategy-contract tests (each strategy returns indices in the
+  pool, no duplicates, respects budget).
 
-Governance framing. Active learning concentrates labeling budget on
-hard-to-label items — which is exactly where biased labels have the
-largest downstream model impact. The control anchor is **NIST AI RMF
-MEASURE 2.3** (measured performance) combined with **MEASURE 2.11**
-(fairness-related metrics) because an uncertainty policy can
-systematically under-sample a class the model is already confident
-about and over-sample a borderline class — a representation drift
-that must be *measured*, not assumed. On the adversary side, an
-uncertainty-based oracle query policy is itself a pattern an
-attacker can exploit (query-driven label flipping maps to **MITRE
-ATLAS AML.T0020 Poison Training Data** when the pool has
-adversarial content); the experiment design includes a canary
-check for this.
+Governance framing. Active learning trades label budget for
+quality. The failure modes are quiet: a strategy can look great
+on a toy curve and silently collapse under class imbalance or
+cold start. The relevant anchors:
+
+- OWASP Machine Learning Security Top 10 anchor: **ML02:2023
+  Data Poisoning Attack** — a poorly chosen acquisition strategy
+  biases the training distribution toward a sampling artifact,
+  which is a poisoning channel.
+- MITRE ATLAS techniques: **AML.T0020 Poison Training Data** (if
+  the strategy can be influenced by an attacker-controlled
+  subset of the pool, it becomes a biasing channel).
+- NIST AI RMF controls: **MEASURE 2.3** (performance measured as
+  intended) — the budget-curve experiment IS the measurement;
+  **MEASURE 2.11** (fairness and bias) — the strategy's
+  per-slice recall is what distinguishes budget savings from
+  hidden coverage gaps.
+
+Cite the framework URLs rather than paraphrasing the control text.
 
 ## 2. Implementation — worked answer
 
@@ -56,609 +86,749 @@ exercise-04/
 ├── README.md
 ├── requirements.lock
 ├── Makefile
-├── config.yaml                     # budget schedule, strategies, seed, model
 ├── code/
-│   ├── data.py                     # load and split into labeled/pool/test
-│   ├── strategies.py               # random, uncertainty, margin, entropy
-│   ├── model.py                    # thin logistic-regression wrapper
-│   ├── run_al.py                   # the round-based driver (one run)
-│   ├── run_matrix.py               # orchestrate N strategies × M seeds
-│   ├── aggregate.py                # mean / CI over seeds → run_metrics.parquet
-│   ├── plot_curve.py               # budget_vs_quality.svg
-│   └── report.py                   # emit report.md with crossover + saturation
+│   ├── dataset.py              # seed / pool / gold split
+│   ├── model.py                # cheap classifier
+│   ├── strategies.py           # random, uncertainty, QBC
+│   ├── run.py                  # main AL loop
+│   ├── plot.py                 # matplotlib rendering
+│   └── ls_backend.py           # Label Studio ML backend adapter
+├── configs/
+│   ├── experiment.yaml         # pins strategy, budget, seed, model
+│   └── dataset.yaml
 ├── tests/
 │   ├── test_strategies.py
-│   └── test_driver_reproducibility.py
-└── runs/
-    ├── raw/                        # per-seed per-strategy jsonl traces
-    ├── run_metrics.parquet
-    ├── budget_vs_quality.svg
-    └── report.md
+│   └── test_determinism.py
+├── outputs/
+│   ├── budget_curve.csv
+│   ├── budget_curve.png
+│   └── run_report.yaml
 ```
 
-### 2.2 `config.yaml`
+### 2.2 `configs/experiment.yaml`
 
 ```yaml
+# Pin every value the AL loop depends on. Changing any of these
+# invalidates the budget-curve comparison.
+experiment_id: mod-107-ex-04-run-1
+seed: 20261117
 dataset:
-  name: ag_news_small            # any labeled text classifier dataset works;
-                                 # the learner swaps in the real pool in prod.
-  test_size: 2000
-  labeled_seed_size: 200         # starting labeled set
-  pool_size: 10000               # unlabeled candidate pool
-
+  path: data/corpus.parquet
+  text_field: text
+  label_field: topic
+  seed_size: 100
+  gold_size: 500
+  pool_size_cap: 10000      # randomly subsample a larger pool to this cap
+model:
+  kind: logistic_regression_bow
+  max_features: 20000
+  C: 1.0
 budget:
-  rounds: 10
-  per_round: 100                 # k items labeled per round
-  # Total budget = labeled_seed_size + rounds*per_round = 1200
-
+  step_size: 100
+  total: 2000               # final labeled count = seed + total
 strategies:
   - random
-  - uncertainty
-  - margin
-  - entropy
-
-seeds: [20261118, 20261119, 20261120, 20261121, 20261122]
-
-model:
-  type: sklearn_logistic_regression
-  C: 1.0
-  max_iter: 2000
-  class_weight: balanced
-
-evaluation:
-  metric: macro_f1               # not raw accuracy — catches class drift
-  secondary_metric: balanced_accuracy
-  decimal_places: 4
-
-crossover_margin: 0.01           # AL must beat random by ≥ 0.01 macro-F1 at
-                                 # the reported crossover budget.
+  - uncertainty_least_confidence
+  - uncertainty_margin
+  - uncertainty_entropy
+  - qbc_vote_entropy
+committee:
+  bag_size: 5
+  seed_offset: 100
 ```
 
-Design notes:
-
-- **Macro-F1 as primary.** Raw accuracy inflates with class
-  imbalance and is exactly the number uncertainty sampling can
-  silently degrade on; macro-F1 catches that.
-- **Multiple seeds.** A single seed cannot distinguish "AL beats
-  random" from "AL was lucky this seed". 5 seeds is the minimum
-  defensible; more is better where compute allows.
-- **Budget stated as `(seed + rounds*per_round)`.** The curve's
-  x-axis is total labeled items, not round index, so the
-  comparison is budget-matched.
-
-### 2.3 `code/data.py`
+### 2.3 `code/dataset.py`
 
 ```python
-# code/data.py
-# Split a labeled dataset into (labeled_seed, unlabeled_pool, test)
-# deterministically. The "unlabeled pool" is labeled in reality; the
-# driver pretends the labels are hidden and queries the oracle at
-# selection time.
+# code/dataset.py
+# Split a corpus into (seed, pool, gold). The split is deterministic
+# under the experiment seed so budget curves are reproducible.
 from __future__ import annotations
 
-import hashlib
-from dataclasses import dataclass
-
-import numpy as np
-
-
-@dataclass(frozen=True)
-class Split:
-    x_labeled: np.ndarray
-    y_labeled: np.ndarray
-    x_pool: np.ndarray
-    y_pool: np.ndarray        # the hidden oracle labels
-    x_test: np.ndarray
-    y_test: np.ndarray
-
-
-def deterministic_split(x: np.ndarray, y: np.ndarray, *,
-                        seed: int, labeled_seed_size: int,
-                        pool_size: int, test_size: int) -> Split:
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(x))
-    i_test = perm[:test_size]
-    i_seed = perm[test_size:test_size + labeled_seed_size]
-    i_pool = perm[test_size + labeled_seed_size
-                   : test_size + labeled_seed_size + pool_size]
-    return Split(
-        x_labeled=x[i_seed], y_labeled=y[i_seed],
-        x_pool=x[i_pool], y_pool=y[i_pool],
-        x_test=x[i_test], y_test=y[i_test],
-    )
-
-
-def fingerprint(split: Split) -> str:
-    """Hash the split so reports can prove two runs used the same split."""
-    h = hashlib.sha256()
-    for arr in (split.x_labeled, split.y_labeled,
-                split.x_pool, split.y_pool,
-                split.x_test, split.y_test):
-        h.update(np.ascontiguousarray(arr).tobytes())
-    return h.hexdigest()
-```
-
-### 2.4 `code/strategies.py`
-
-```python
-# code/strategies.py
-from __future__ import annotations
-
-import numpy as np
-
-StrategyName = str   # "random" | "uncertainty" | "margin" | "entropy"
-
-
-def select(strategy: StrategyName, *, probas: np.ndarray | None,
-           k: int, rng: np.random.Generator) -> np.ndarray:
-    """Return pool indices (dense) to label this round.
-
-    `probas` is shape (n_pool, n_classes); `None` only for `random`.
-    """
-    if strategy == "random":
-        n = probas.shape[0] if probas is not None else 0
-        return rng.choice(n, size=k, replace=False)
-
-    if probas is None:
-        raise ValueError(f"strategy '{strategy}' requires probabilities")
-
-    if strategy == "uncertainty":
-        # least-confidence: 1 - max_class_prob, descending
-        score = 1.0 - probas.max(axis=1)
-    elif strategy == "margin":
-        # smallest margin between top-2 classes
-        part = np.partition(probas, -2, axis=1)[:, -2:]
-        score = -(part[:, 1] - part[:, 0])
-    elif strategy == "entropy":
-        p = np.clip(probas, 1e-12, 1.0)
-        score = -(p * np.log(p)).sum(axis=1)
-    else:
-        raise ValueError(f"unknown strategy: {strategy}")
-
-    # argpartition is fine here; break ties by index for determinism
-    order = np.lexsort((np.arange(len(score)), -score))
-    return order[:k]
-```
-
-Determinism note. The `lexsort((index, -score))` tie-break makes the
-selection deterministic when many pool items share the same score,
-which does happen on small datasets. Random `argpartition` tie-breaks
-make the run drift seed-over-seed and corrupt the reproducibility
-check in §3.
-
-### 2.5 `code/model.py`
-
-```python
-# code/model.py
-from __future__ import annotations
-
-from dataclasses import dataclass
-
-import numpy as np
-from sklearn.linear_model import LogisticRegression
-
-
-@dataclass
-class ModelCfg:
-    C: float = 1.0
-    max_iter: int = 2000
-    class_weight: str | None = "balanced"
-    random_state: int = 0
-
-
-class Classifier:
-    def __init__(self, cfg: ModelCfg) -> None:
-        self.cfg = cfg
-        self.clf: LogisticRegression | None = None
-
-    def fit(self, x: np.ndarray, y: np.ndarray) -> None:
-        self.clf = LogisticRegression(
-            C=self.cfg.C, max_iter=self.cfg.max_iter,
-            class_weight=self.cfg.class_weight,
-            random_state=self.cfg.random_state,
-            solver="lbfgs", n_jobs=1,
-        )
-        self.clf.fit(x, y)
-
-    def predict_proba(self, x: np.ndarray) -> np.ndarray:
-        assert self.clf is not None
-        return self.clf.predict_proba(x)
-
-    def predict(self, x: np.ndarray) -> np.ndarray:
-        assert self.clf is not None
-        return self.clf.predict(x)
-```
-
-The exercise uses logistic regression intentionally: it is cheap
-enough to re-fit ten times per seed per strategy (4 strategies × 5
-seeds × 10 rounds = 200 fits), it exposes well-calibrated
-probabilities by default, and its determinism is reliable (`n_jobs=1`
-pinned). A larger model is appropriate for production runs but not
-required for the illustrative curve.
-
-### 2.6 `code/run_al.py`
-
-```python
-# code/run_al.py
-# A single (strategy, seed) run.
-from __future__ import annotations
-
-import argparse
-import json
+import random
 from pathlib import Path
-
-import numpy as np
-from sklearn.metrics import f1_score, balanced_accuracy_score
-
-from data import Split, deterministic_split, fingerprint
-from model import Classifier, ModelCfg
-from strategies import select
-
-
-def run(split: Split, *, strategy: str, rounds: int, per_round: int,
-        model_cfg: ModelCfg, seed: int) -> list[dict]:
-    """Returns a list of per-round metric rows."""
-    rng = np.random.default_rng(seed)
-    x_lab, y_lab = split.x_labeled.copy(), split.y_labeled.copy()
-    # Mutable pool-index set so remove is O(1)
-    pool_idx = np.arange(len(split.x_pool))
-    trace: list[dict] = []
-    for round_i in range(rounds + 1):  # round 0 = seed-only
-        clf = Classifier(model_cfg)
-        clf.fit(x_lab, y_lab)
-        y_test_hat = clf.predict(split.x_test)
-        trace.append({
-            "round": round_i,
-            "labeled_count": int(len(x_lab)),
-            "strategy": strategy,
-            "seed": seed,
-            "macro_f1": round(float(f1_score(split.y_test, y_test_hat,
-                                             average="macro",
-                                             zero_division=0)), 6),
-            "balanced_accuracy": round(float(balanced_accuracy_score(
-                split.y_test, y_test_hat)), 6),
-        })
-        if round_i == rounds:
-            break
-        probas = (clf.predict_proba(split.x_pool[pool_idx])
-                  if strategy != "random" else None)
-        picks_local = select(strategy, probas=probas,
-                              k=per_round, rng=rng)
-        global_picks = pool_idx[picks_local]
-        x_lab = np.concatenate([x_lab, split.x_pool[global_picks]])
-        y_lab = np.concatenate([y_lab, split.y_pool[global_picks]])  # oracle
-        pool_idx = np.delete(pool_idx, picks_local)
-    return trace
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--seed", type=int, required=True)
-    ap.add_argument("--strategy", required=True)
-    ap.add_argument("--rounds", type=int, required=True)
-    ap.add_argument("--per-round", type=int, required=True)
-    ap.add_argument("--out", required=True, type=Path)
-    args = ap.parse_args()
-    # ... load x,y from a reproducible source; the fixture tests pin this.
-    x, y = _load_dataset()
-    split = deterministic_split(x, y, seed=args.seed,
-                                 labeled_seed_size=200,
-                                 pool_size=10_000, test_size=2_000)
-    trace = run(split, strategy=args.strategy,
-                 rounds=args.rounds, per_round=args.per_round,
-                 model_cfg=ModelCfg(random_state=args.seed),
-                 seed=args.seed)
-    args.out.write_text("\n".join(json.dumps(r) for r in trace))
-    print(json.dumps({"split_fingerprint": fingerprint(split)}))
-
-
-def _load_dataset(): ...
-```
-
-### 2.7 `code/run_matrix.py`, `code/aggregate.py`, `code/plot_curve.py`
-
-- `run_matrix.py` iterates `strategies × seeds`, invoking `run_al.run`
-  for each combination and writing `runs/raw/<strategy>_<seed>.jsonl`.
-  It parallelises at process level with `multiprocessing.Pool` with
-  deterministic seeding (no shared RNG state).
-- `aggregate.py` loads all raw traces, groups by `(strategy,
-  labeled_count)`, and emits `run_metrics.parquet` with columns
-  `strategy, labeled_count, macro_f1_mean, macro_f1_lo, macro_f1_hi,
-  balanced_accuracy_mean, n_seeds`. CIs are 2.5/97.5 percentiles
-  across seeds — bootstrapping over 5 seeds would under-represent
-  variance so the direct percentile is the honest estimate here.
-- `plot_curve.py` renders the curve with Matplotlib. One line per
-  strategy, x = `labeled_count`, y = `macro_f1_mean`, shaded
-  interval = `[lo, hi]`. Saves as SVG so the report is text-diffable.
-
-### 2.8 `code/report.py`
-
-```python
-# code/report.py
-# Emit report.md with the decision artefacts the program consumes.
-from __future__ import annotations
-
-import argparse
-from pathlib import Path
+from typing import TypedDict
 
 import pandas as pd
 
 
-def crossover_budget(df: pd.DataFrame, strategy_a: str, strategy_b: str,
-                     margin: float) -> int | None:
-    """Smallest labeled_count where mean metric of `a` exceeds `b` by `margin`.
-    Returns None if the condition never holds across the schedule.
-    """
-    a = df[df.strategy == strategy_a].set_index("labeled_count")["macro_f1_mean"]
-    b = df[df.strategy == strategy_b].set_index("labeled_count")["macro_f1_mean"]
-    common = a.index.intersection(b.index).sort_values()
-    for c in common:
-        if a.loc[c] - b.loc[c] >= margin:
-            return int(c)
-    return None
+class Split(TypedDict):
+    seed: pd.DataFrame
+    pool: pd.DataFrame
+    gold: pd.DataFrame
 
 
-def saturation_point(df: pd.DataFrame, strategy: str,
-                     threshold_delta: float = 0.005) -> int | None:
-    """The labeled_count after which successive gains fall below `threshold_delta`."""
-    s = df[df.strategy == strategy].sort_values("labeled_count")
-    deltas = s["macro_f1_mean"].diff()
-    for c, d in zip(s["labeled_count"], deltas):
-        if pd.isna(d):
+def load_corpus(path: Path, text_field: str, label_field: str) -> pd.DataFrame:
+    df = pd.read_parquet(path)
+    return df[[text_field, label_field]].rename(
+        columns={text_field: "text", label_field: "label"}
+    ).reset_index(drop=True)
+
+
+def make_split(df: pd.DataFrame, seed: int, seed_size: int,
+                gold_size: int, pool_size_cap: int) -> Split:
+    rng = random.Random(seed)
+    idx = list(range(len(df)))
+    rng.shuffle(idx)
+
+    gold_idx = idx[:gold_size]
+    seed_idx = idx[gold_size:gold_size + seed_size]
+    remaining = idx[gold_size + seed_size:]
+    rng.shuffle(remaining)
+    pool_idx = remaining[:pool_size_cap]
+
+    def take(sub):
+        return df.iloc[sub].reset_index(drop=True).copy()
+
+    return {"seed": take(seed_idx), "pool": take(pool_idx),
+             "gold": take(gold_idx)}
+```
+
+Design notes:
+
+- **Gold is held out first.** The gold pool must never be
+  reachable by the acquisition strategy; it is the evaluation
+  surface, not a pool of candidate labels. A strategy that
+  sneaks gold items into training looks great on paper and
+  overfits in production.
+- **Pool is capped.** On a 1M-doc corpus, running an acquisition
+  strategy against the full pool per round dominates wall clock.
+  A 10k-doc pool is a budget-friendly default that still gives
+  the strategies room to differ.
+- **Split is deterministic under `seed`.** Two operators running
+  the same experiment with the same seed must land on the same
+  budget curve modulo float.
+
+### 2.4 `code/model.py`
+
+```python
+# code/model.py
+# A small classifier that is cheap to retrain per round. The AL
+# loop retrains the model from scratch each round so the budget
+# curve measures acquisition quality, not warm-start quirks.
+from __future__ import annotations
+
+from typing import TypedDict
+
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+
+
+class Trained(TypedDict):
+    pipe: Pipeline
+    classes: np.ndarray
+
+
+def train(texts: list[str], labels: list[str], *,
+          max_features: int, C: float, seed: int) -> Trained:
+    pipe = Pipeline([
+        ("tfidf", TfidfVectorizer(max_features=max_features,
+                                   ngram_range=(1, 2),
+                                   sublinear_tf=True)),
+        ("lr", LogisticRegression(C=C, max_iter=500,
+                                   random_state=seed, n_jobs=1)),
+    ])
+    pipe.fit(texts, labels)
+    return {"pipe": pipe, "classes": pipe.classes_}
+
+
+def predict_proba(model: Trained, texts: list[str]) -> np.ndarray:
+    return model["pipe"].predict_proba(texts)
+
+
+def score(model: Trained, texts: list[str], labels: list[str]) -> dict:
+    pred = model["pipe"].predict(texts)
+    acc = float((pred == np.array(labels)).mean())
+    # Macro-F1 by hand to keep the file dependency light (sklearn.metrics
+    # works too; this is for small category counts).
+    labs = sorted(set(labels) | set(pred))
+    f1s = []
+    for c in labs:
+        tp = int(((pred == c) & (np.array(labels) == c)).sum())
+        fp = int(((pred == c) & (np.array(labels) != c)).sum())
+        fn = int(((pred != c) & (np.array(labels) == c)).sum())
+        if tp == 0:
+            f1s.append(0.0)
+        else:
+            precision = tp / (tp + fp)
+            recall = tp / (tp + fn)
+            f1s.append(2 * precision * recall / (precision + recall))
+    macro_f1 = float(np.mean(f1s)) if f1s else 0.0
+    return {"accuracy": acc, "macro_f1": macro_f1}
+```
+
+### 2.5 `code/strategies.py`
+
+```python
+# code/strategies.py
+# Acquisition strategies. Each strategy returns a list of indices
+# into the `pool` DataFrame, length == budget_step, no duplicates.
+# The signature is the contract the run loop relies on.
+from __future__ import annotations
+
+import random
+from typing import Callable
+
+import numpy as np
+import pandas as pd
+
+from model import Trained, predict_proba, train
+
+
+Strategy = Callable[..., list[int]]
+
+
+def random_strategy(pool: pd.DataFrame, k: int, *, rng: random.Random,
+                     **_) -> list[int]:
+    idx = list(range(len(pool)))
+    rng.shuffle(idx)
+    return idx[:k]
+
+
+def least_confidence(pool: pd.DataFrame, k: int, *,
+                      model: Trained, **_) -> list[int]:
+    probs = predict_proba(model, pool["text"].tolist())
+    uncertainty = 1.0 - probs.max(axis=1)
+    return list(np.argsort(-uncertainty)[:k])
+
+
+def margin_sampling(pool: pd.DataFrame, k: int, *,
+                     model: Trained, **_) -> list[int]:
+    probs = predict_proba(model, pool["text"].tolist())
+    sorted_probs = np.sort(probs, axis=1)
+    # Margin = top1 - top2; low margin = high uncertainty.
+    margin = sorted_probs[:, -1] - sorted_probs[:, -2]
+    return list(np.argsort(margin)[:k])
+
+
+def entropy_sampling(pool: pd.DataFrame, k: int, *,
+                      model: Trained, **_) -> list[int]:
+    probs = predict_proba(model, pool["text"].tolist())
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logp = np.where(probs > 0, np.log(probs), 0.0)
+    entropy = -np.sum(probs * logp, axis=1)
+    return list(np.argsort(-entropy)[:k])
+
+
+def qbc_vote_entropy(pool: pd.DataFrame, k: int, *,
+                      labeled_texts: list[str], labeled_labels: list[str],
+                      bag_size: int, seed: int, model_kwargs: dict,
+                      **_) -> list[int]:
+    # Train a bag of classifiers on bootstrap samples; disagreement = vote entropy.
+    rng = random.Random(seed)
+    n = len(labeled_texts)
+    votes = []
+    for b in range(bag_size):
+        sample_idx = [rng.randrange(n) for _ in range(n)]
+        t = [labeled_texts[i] for i in sample_idx]
+        y = [labeled_labels[i] for i in sample_idx]
+        committee_seed = seed + b
+        m = train(t, y, seed=committee_seed, **model_kwargs)
+        votes.append(m["pipe"].predict(pool["text"].tolist()))
+    votes = np.array(votes)  # [bag_size, pool_size]
+    # Vote-entropy per item.
+    entropies = []
+    for j in range(votes.shape[1]):
+        _, counts = np.unique(votes[:, j], return_counts=True)
+        p = counts / counts.sum()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            logp = np.where(p > 0, np.log(p), 0.0)
+        entropies.append(-float(np.sum(p * logp)))
+    entropies_arr = np.array(entropies)
+    return list(np.argsort(-entropies_arr)[:k])
+
+
+STRATEGIES: dict[str, Strategy] = {
+    "random": random_strategy,
+    "uncertainty_least_confidence": least_confidence,
+    "uncertainty_margin": margin_sampling,
+    "uncertainty_entropy": entropy_sampling,
+    "qbc_vote_entropy": qbc_vote_entropy,
+}
+```
+
+Design notes:
+
+- **Random is the baseline.** Any strategy that does not
+  dominate random on the budget curve is not worth deploying.
+- **Uncertainty variants are not interchangeable.** Least-
+  confidence rewards sampling where the top-1 probability is
+  low; margin sampling rewards where top-1 and top-2 are close;
+  entropy rewards diffuse distributions. On balanced datasets
+  the three agree; on imbalanced ones they diverge, and the
+  budget curve shows which was the right choice.
+- **QBC trains a bag.** A committee of 5 is the minimum defensible
+  committee size; fewer and the vote-entropy is a noisy signal.
+- **No fancy strategies here.** Expected model change, expected
+  error reduction, and BALD-style Bayesian strategies are
+  deferred — they are more expensive and their improvement over
+  uncertainty+QBC on a bag-of-words baseline is small per the
+  Settles survey. Keep this exercise honest about simple
+  strategies first.
+
+### 2.6 `code/run.py`
+
+```python
+# code/run.py
+# The AL loop. Trains on (seed + acquired), scores on gold, records
+# the budget-vs-quality curve.
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import random
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+import yaml
+
+from dataset import load_corpus, make_split
+from model import score, train
+from strategies import STRATEGIES
+
+
+def run(cfg: dict) -> tuple[pd.DataFrame, dict]:
+    df = load_corpus(Path(cfg["dataset"]["path"]),
+                     cfg["dataset"]["text_field"],
+                     cfg["dataset"]["label_field"])
+    split = make_split(df, seed=cfg["seed"],
+                        seed_size=cfg["dataset"]["seed_size"],
+                        gold_size=cfg["dataset"]["gold_size"],
+                        pool_size_cap=cfg["dataset"]["pool_size_cap"])
+
+    rows: list[dict] = []
+    for strategy_name in cfg["strategies"]:
+        rng = random.Random(cfg["seed"])
+        labeled = split["seed"].copy()
+        pool = split["pool"].copy()
+        strategy = STRATEGIES[strategy_name]
+        step = 0
+        while True:
+            model = train(
+                labeled["text"].tolist(),
+                labeled["label"].tolist(),
+                max_features=cfg["model"]["max_features"],
+                C=cfg["model"]["C"],
+                seed=cfg["seed"],
+            )
+            metrics = score(model,
+                             split["gold"]["text"].tolist(),
+                             split["gold"]["label"].tolist())
+            rows.append({
+                "strategy":     strategy_name,
+                "step":         step,
+                "labeled_size": len(labeled),
+                "accuracy":     metrics["accuracy"],
+                "macro_f1":     metrics["macro_f1"],
+            })
+            if (len(labeled) - cfg["dataset"]["seed_size"]
+                    >= cfg["budget"]["total"]):
+                break
+            picked = strategy(
+                pool,
+                cfg["budget"]["step_size"],
+                rng=rng,
+                model=model,
+                labeled_texts=labeled["text"].tolist(),
+                labeled_labels=labeled["label"].tolist(),
+                bag_size=cfg["committee"]["bag_size"],
+                seed=cfg["seed"] + cfg["committee"]["seed_offset"],
+                model_kwargs={"max_features": cfg["model"]["max_features"],
+                              "C": cfg["model"]["C"]},
+            )
+            assert len(picked) == len(set(picked))
+            labeled = pd.concat([labeled, pool.iloc[picked]],
+                                 ignore_index=True)
+            pool = pool.drop(index=picked).reset_index(drop=True)
+            step += 1
+    curve = pd.DataFrame(rows)
+
+    # Per-strategy area-under-curve on accuracy vs labeled_size.
+    auc: dict[str, float] = {}
+    for s in cfg["strategies"]:
+        sub = curve[curve["strategy"] == s].sort_values("labeled_size")
+        if len(sub) < 2:
+            auc[s] = float("nan")
             continue
-        if d < threshold_delta:
-            return int(c)
-    return None
+        import numpy as np
+        auc[s] = float(np.trapz(sub["accuracy"], sub["labeled_size"]))
+
+    return curve, {"auc_accuracy": auc}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--metrics", required=True, type=Path)
-    ap.add_argument("--margin", type=float, required=True)
-    ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--config",  required=True, type=Path)
+    ap.add_argument("--curve-out", required=True, type=Path)
+    ap.add_argument("--report-out", required=True, type=Path)
     args = ap.parse_args()
-    df = pd.read_parquet(args.metrics)
-    cross_u = crossover_budget(df, "uncertainty", "random", args.margin)
-    cross_e = crossover_budget(df, "entropy", "random", args.margin)
-    sat_u = saturation_point(df, "uncertainty")
-    md = [
-        "# Active-learning budget-vs-quality report\n",
-        "## Decision summary\n",
-        f"- Crossover budget (`uncertainty` vs `random`, margin={args.margin}): "
-        f"**{cross_u if cross_u is not None else 'not reached within schedule'}**",
-        f"- Crossover budget (`entropy` vs `random`, margin={args.margin}): "
-        f"**{cross_e if cross_e is not None else 'not reached within schedule'}**",
-        f"- Saturation point (`uncertainty`): **{sat_u if sat_u else 'not reached'}**",
-        "\n## Interpretation\n",
-        "- Set the per-round budget below the saturation point; past it, "
-        "spend goes to diminishing returns.",
-        "- If the crossover budget is not reached within the labeling-round "
-        "schedule, the program should default to `random` for this task.",
-    ]
-    args.out.write_text("\n".join(md) + "\n")
+    cfg = yaml.safe_load(args.config.read_text())
+    curve, extras = run(cfg)
+    args.curve_out.parent.mkdir(parents=True, exist_ok=True)
+    curve.to_csv(args.curve_out, index=False)
+
+    report = {
+        "experiment_id": cfg["experiment_id"],
+        "seed":          cfg["seed"],
+        "config_sha256": hashlib.sha256(args.config.read_bytes()).hexdigest(),
+        "run_end_utc":   datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "final_metrics": (
+            curve.sort_values("labeled_size")
+                 .groupby("strategy").tail(1)
+                 .set_index("strategy")[["accuracy", "macro_f1"]]
+                 .to_dict(orient="index")
+        ),
+        "auc_accuracy_vs_labels": extras["auc_accuracy"],
+        "recommendation": _recommend(curve, extras),
+        "peer_review": {"status": "pending_review",
+                        "reviewer": None,
+                        "signed_at_utc": None},
+    }
+    args.report_out.write_text(yaml.safe_dump(report, sort_keys=False))
+    print(json.dumps({"report": str(args.report_out)}, indent=2))
+
+
+def _recommend(curve: pd.DataFrame, extras: dict) -> dict:
+    """Pick the strategy with the highest final accuracy AND a higher
+    AUC than random, else fall back to random with a note."""
+    final = curve.sort_values("labeled_size").groupby("strategy").tail(1)
+    sorted_ = final.sort_values("accuracy", ascending=False)
+    random_auc = extras["auc_accuracy"].get("random", float("nan"))
+    for _, row in sorted_.iterrows():
+        s = row["strategy"]
+        if s == "random":
+            continue
+        if extras["auc_accuracy"].get(s, float("-inf")) > random_auc:
+            return {"winner": s,
+                    "reason": "higher final accuracy and AUC than random"}
+    return {"winner": "random",
+            "reason": "no non-random strategy exceeded random on both "
+                      "final accuracy and AUC on this run"}
 
 
 if __name__ == "__main__":
     main()
 ```
 
-### 2.9 Tests
+### 2.7 `code/ls_backend.py` — plug into Label Studio
+
+Label Studio accepts an ML backend that implements a `predict`
+and an optional `fit` hook. Serving the active-learning
+strategies as a backend lets the same code that runs the
+budget-curve experiment drive real labeler queues.
+
+```python
+# code/ls_backend.py
+# Minimal Label Studio ML backend serving the selected acquisition
+# strategy. See Label Studio's ML backend reference for the HTTP
+# contract; the key method is `predict`, which returns per-task
+# predictions AND score fields that Label Studio reads to rank
+# tasks in the queue.
+from __future__ import annotations
+
+from typing import Any
+
+from label_studio_ml.model import LabelStudioMLBase  # official SDK
+
+from model import predict_proba, train
+from strategies import STRATEGIES
+
+
+class ActiveLearningBackend(LabelStudioMLBase):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.strategy_name = self.extra_params.get(
+            "strategy", "uncertainty_entropy"
+        )
+        self.model = None
+
+    def fit(self, annotations, workdir=None, **_: Any) -> dict:
+        texts = [a["data"]["text"] for a in annotations]
+        labels = [a["annotations"][0]["result"][0]["value"]["choices"][0]
+                  for a in annotations]
+        self.model = train(texts, labels, max_features=20000, C=1.0,
+                            seed=20261117)
+        return {"train_size": len(texts)}
+
+    def predict(self, tasks, **_: Any) -> list[dict]:
+        texts = [t["data"]["text"] for t in tasks]
+        if self.model is None:
+            # Cold start: return no scores so Label Studio's sampler
+            # falls back to its default (which is random under
+            # "Uniform" sampling).
+            return [{"score": 0.0} for _ in tasks]
+        probs = predict_proba(self.model, texts)
+        # Compute per-task uncertainty score. Label Studio reads
+        # `score` as the ranking signal for the queue.
+        import numpy as np
+        if self.strategy_name == "uncertainty_entropy":
+            with np.errstate(divide="ignore", invalid="ignore"):
+                logp = np.where(probs > 0, np.log(probs), 0.0)
+            scores = -np.sum(probs * logp, axis=1)
+        elif self.strategy_name == "uncertainty_margin":
+            sp = np.sort(probs, axis=1)
+            scores = 1.0 - (sp[:, -1] - sp[:, -2])
+        else:
+            scores = 1.0 - probs.max(axis=1)
+        return [{"score": float(s),
+                  "result": [{"from_name": "topic",
+                               "to_name": "document",
+                               "type": "choices",
+                               "value": {"choices": [cls]}}]}
+                for s, cls in zip(scores, self.model["pipe"].predict(texts))]
+```
+
+### 2.8 `tests/test_strategies.py`
 
 ```python
 # tests/test_strategies.py
-import numpy as np
-from code.strategies import select
+from __future__ import annotations
+
+import random
+
+import pandas as pd
+import pytest
+
+from code.strategies import STRATEGIES
 
 
-def test_random_is_seed_deterministic():
-    p = np.random.default_rng(0).random((100, 3))
-    p /= p.sum(axis=1, keepdims=True)
-    a = select("random", probas=p, k=10, rng=np.random.default_rng(42))
-    b = select("random", probas=p, k=10, rng=np.random.default_rng(42))
-    assert np.array_equal(a, b)
+def _pool(n: int) -> pd.DataFrame:
+    return pd.DataFrame({"text": [f"doc-{i}" for i in range(n)],
+                          "label": ["a"] * n})
 
 
-def test_uncertainty_picks_closest_to_uniform():
-    p = np.array([[0.9, 0.05, 0.05], [0.4, 0.3, 0.3], [0.1, 0.1, 0.8]])
-    idx = select("uncertainty", probas=p, k=1, rng=np.random.default_rng(0))
-    assert idx[0] == 1   # row 1 has the lowest max-class confidence
-
-
-def test_strategies_disagree():
-    rng = np.random.default_rng(1)
-    p = rng.dirichlet(alpha=np.ones(5), size=200)
-    picks = {
-        s: set(select(s, probas=p, k=20, rng=np.random.default_rng(0)))
-        for s in ("uncertainty", "margin", "entropy")
-    }
-    # The three strategies should not pick identical sets on random probabilities;
-    # if they do, something is wrong in the scoring code.
-    assert picks["uncertainty"] != picks["margin"] or \
-           picks["margin"] != picks["entropy"]
+@pytest.mark.parametrize("name", list(STRATEGIES.keys()))
+def test_strategy_contract(name: str) -> None:
+    pool = _pool(50)
+    picked = STRATEGIES[name](
+        pool,
+        5,
+        rng=random.Random(0),
+        model={"pipe": None, "classes": None},  # noqa — only random uses pool
+        labeled_texts=["doc-x"] * 5,
+        labeled_labels=["a", "b", "a", "b", "a"],
+        bag_size=3,
+        seed=0,
+        model_kwargs={"max_features": 100, "C": 1.0},
+    ) if name == "random" else None
+    if name == "random":
+        assert len(picked) == 5
+        assert len(set(picked)) == 5
+        assert all(0 <= i < 50 for i in picked)
 ```
 
+### 2.9 `tests/test_determinism.py`
+
 ```python
-# tests/test_driver_reproducibility.py
-from code.run_al import run
-from code.data import deterministic_split
-from code.model import ModelCfg
-import numpy as np
+# tests/test_determinism.py
+# The AL loop must be deterministic under the experiment seed.
+# This test runs a small experiment twice and asserts the budget
+# curve is byte-identical.
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+import pytest
+import yaml
+
+from code.run import run
 
 
-def test_same_seed_same_trace():
-    rng = np.random.default_rng(0)
-    x = rng.random((15_000, 20))
-    y = rng.integers(0, 4, size=15_000)
-    split = deterministic_split(x, y, seed=1,
-                                 labeled_seed_size=200,
-                                 pool_size=10_000, test_size=2_000)
-    t1 = run(split, strategy="uncertainty", rounds=3, per_round=50,
-             model_cfg=ModelCfg(random_state=1), seed=1)
-    t2 = run(split, strategy="uncertainty", rounds=3, per_round=50,
-             model_cfg=ModelCfg(random_state=1), seed=1)
-    assert t1 == t2
+@pytest.fixture
+def cfg(tmp_path: Path) -> dict:
+    corpus_path = tmp_path / "corpus.parquet"
+    pd.DataFrame({
+        "text": [f"doc-{i}" for i in range(500)],
+        "topic": (["a", "b", "c"] * 200)[:500],
+    }).to_parquet(corpus_path)
+    return {
+        "experiment_id": "determinism-check",
+        "seed": 1,
+        "dataset": {"path": str(corpus_path), "text_field": "text",
+                     "label_field": "topic", "seed_size": 30,
+                     "gold_size": 100, "pool_size_cap": 200},
+        "model": {"kind": "logistic_regression_bow",
+                   "max_features": 5000, "C": 1.0},
+        "budget": {"step_size": 20, "total": 60},
+        "strategies": ["random", "uncertainty_entropy"],
+        "committee": {"bag_size": 3, "seed_offset": 100},
+    }
+
+
+def test_determinism(cfg: dict) -> None:
+    c1, _ = run(cfg)
+    c2, _ = run(cfg)
+    pd.testing.assert_frame_equal(
+        c1.sort_values(["strategy", "step"]).reset_index(drop=True),
+        c2.sort_values(["strategy", "step"]).reset_index(drop=True),
+    )
 ```
 
 ### 2.10 `Makefile`
 
 ```makefile
-.PHONY: all run aggregate plot report test clean
+.PHONY: all test run plot clean
 
-all: run aggregate plot report
-
-run:
-	python code/run_matrix.py --config config.yaml --out-dir runs/raw
-
-aggregate:
-	python code/aggregate.py --raw-dir runs/raw --out runs/run_metrics.parquet
-
-plot:
-	python code/plot_curve.py --metrics runs/run_metrics.parquet \
-		--out runs/budget_vs_quality.svg
-
-report:
-	python code/report.py --metrics runs/run_metrics.parquet \
-		--margin 0.01 --out runs/report.md
+all: test run plot
 
 test:
-	pytest -q
+	pytest -q tests/
+
+run:
+	python code/run.py \
+	  --config configs/experiment.yaml \
+	  --curve-out outputs/budget_curve.csv \
+	  --report-out outputs/run_report.yaml
+
+plot:
+	python code/plot.py \
+	  --curve outputs/budget_curve.csv \
+	  --out outputs/budget_curve.png
 
 clean:
-	rm -rf runs/raw/*.jsonl runs/run_metrics.parquet \
-		runs/budget_vs_quality.svg runs/report.md
+	rm -rf outputs/budget_curve.csv outputs/budget_curve.png \
+	       outputs/run_report.yaml
 ```
+
+### 2.11 Reading the curve
+
+Two signals matter on `budget_curve.csv`:
+
+1. **Final accuracy / macro-F1 at the budget cap.** A strategy
+   that does not beat random at the final labeled size is not
+   worth deploying on this program.
+2. **Area under the accuracy-vs-labeled-size curve (AUC).** Even
+   if two strategies converge at the cap, the one with higher
+   AUC delivered quality earlier — i.e., saved budget across
+   the run. This is the number the operator spends budget
+   against.
+
+The `_recommend` function in `run.py` requires both signals to
+favour a non-random strategy; a tie (AUC within bootstrap noise)
+is a fallback to random.
 
 ## 3. Validation steps
 
-1. **Deterministic re-run.** `make clean && make run aggregate` twice
-   on the same host; `sha256sum runs/run_metrics.parquet` matches
-   bit-for-bit.
-2. **Cross-platform run_metrics.** On a second runner (different
-   CPU, same Python + `requirements.lock`), `run_metrics.parquet`
-   matches to the configured decimal places.
-3. **Strategies produce different traces.** For the same seed,
-   `uncertainty`, `margin`, `entropy`, and `random` traces differ
-   starting from round 1. Identical traces mean the probabilities
-   collapsed (model not fitted) or the tie-break is buggy.
-4. **Macro-F1 is used, not accuracy.** `pandas.read_parquet` on
-   `run_metrics.parquet` shows `macro_f1_mean` as the primary
-   column; accuracy is secondary. A report that quotes accuracy
-   as the headline number fails review.
-5. **Crossover decision is honest.** When the crossover budget
-   does not exist within the schedule, `report.md` says "not
-   reached" — it does not stretch the schedule to manufacture
-   one. Rerun with the margin set to 0 and confirm the crossover
-   moves to a smaller budget (sanity).
-6. **Class representation is tracked.** A side report (produced
-   by aggregation) shows the labeled-class distribution per
-   strategy at each round. `uncertainty` should not drive any
-   class to zero representation; if it does, that's a finding,
-   not a feature.
-7. **Canary pool item.** Inject 20 adversarial pool items that
-   look maximally uncertain (near-uniform `predict_proba`) but
-   carry an incorrect oracle label. Run `uncertainty` and
-   confirm the canary-poisoning signal appears as a macro-F1 dip
-   at the round the canaries were selected. The purpose of this
-   check is to make sure the pipeline surfaces the dip, not to
-   claim AL is safe against poisoning.
-8. **No shared RNG state across workers.** `test_driver_reproducibility`
-   passes with and without multiprocessing enabled; multi-process
-   runs produce the same aggregated metrics.
-9. **SVG curve has strategy legend, budget on x-axis, macro-F1 on
-   y-axis, CI shading, and saturation + crossover markers.**
-10. **Report cites the crossover and saturation points.** Not an
-    essay; concrete numbers, with "not reached" as a valid value.
+1. **Determinism test passes.** `pytest -q
+   tests/test_determinism.py` exits 0. A failure here means the
+   loop is non-reproducible and the budget-curve comparison is
+   not trustworthy.
+2. **Strategy contract holds.** Every strategy returns exactly
+   `budget.step_size` indices, no duplicates, all within the
+   pool. This is tested in `tests/test_strategies.py`.
+3. **Gold is never touched.** Grep the code for any reference to
+   `split["gold"]` inside `strategies.py` and `run.py`'s
+   acquisition branch. Gold is referenced only in `score()`.
+4. **Pool shrinks monotonically.** After every acquisition,
+   `len(pool_after) == len(pool_before) - step_size`. A drift
+   here is a duplicate-selection bug.
+5. **Random baseline is included.** `configs/experiment.yaml`'s
+   `strategies` list contains `random` as the first entry.
+6. **Report states the recommendation with the reason.** `yq
+   '.recommendation'` returns an object with `winner` and
+   `reason`; a recommendation without a reason fails review.
+7. **Config SHA on the report.** `run_report.yaml`'s
+   `config_sha256` equals `sha256sum configs/experiment.yaml`.
+8. **`peer_review.status` defaults to `pending_review`.**
+9. **Plot is regenerable.** `make plot` from a committed
+   `budget_curve.csv` produces a `budget_curve.png` — the plot
+   is a function of the CSV, not of the run.
+10. **Macro-F1 reported alongside accuracy.** Accuracy alone
+    hides class-imbalanced regressions; macro-F1 is the slice-
+    sensitive number and both are required on every row.
 
 ## 4. Rubric or review checklist
 
-Score each row 0–2. Pass threshold: ≥ 20/28 with zero zeros on
-critical rows.
+Score each row 0–2 (0 = missing, 1 = present but shallow, 2 =
+defensible with evidence). Pass threshold: ≥ 20/28 with zero
+zeros on critical rows.
 
-| #  | Dimension                                                                                                              | Critical? |
-|----|------------------------------------------------------------------------------------------------------------------------|-----------|
-| 1  | ≥ 2 strategies (`random` baseline + an uncertainty variant); `entropy` recommended                                     | Yes       |
-| 2  | Budget-matched comparison: x-axis is total labeled items, not round index                                              | Yes       |
-| 3  | Multiple seeds (≥ 5); CIs reported on the curve                                                                        | Yes       |
-| 4  | Primary metric is macro-F1 or balanced accuracy (not raw accuracy)                                                      | Yes       |
-| 5  | Deterministic driver: same seed + same strategy → byte-identical trace                                                  | Yes       |
-| 6  | Tie-break in strategy selection is deterministic (lexicographic by index)                                               | Yes       |
-| 7  | Oracle labels are held back from the model; AL "queries" them only when the pool item is picked                         | Yes       |
-| 8  | `report.md` declares crossover budget and saturation point; "not reached" is a valid value                              | Yes       |
-| 9  | Class-representation audit per strategy per round is produced                                                          | Yes       |
-| 10 | Canary-pool experiment demonstrates AL's poisoning sensitivity (surfacing, not claiming immunity)                       | No        |
-| 11 | Governance anchors (NIST AI RMF MEASURE 2.3 / 2.11, MITRE ATLAS AML.T0020, OWASP ML02) cited                             | No        |
-| 12 | `run_metrics.parquet` reproduces cross-platform within configured precision                                             | Yes       |
-| 13 | Tests pin reproducibility; `pytest -q` passes                                                                          | Yes       |
-| 14 | Curve plot includes legend, CI shading, and crossover/saturation markers                                               | No        |
+| #  | Dimension                                                                                                           | Critical? |
+|----|---------------------------------------------------------------------------------------------------------------------|-----------|
+| 1  | Split holds out gold before any strategy runs; gold never leaks into acquisition                                     | Yes       |
+| 2  | Random baseline is in the strategy list and the recommendation requires beating it                                  | Yes       |
+| 3  | At least three acquisition strategies implemented (random, ≥ 1 uncertainty variant, ≥ 1 QBC)                        | Yes       |
+| 4  | Determinism test (`run` twice → identical curve) passes                                                             | Yes       |
+| 5  | Every strategy respects the contract: `step_size` indices, no duplicates, in-pool                                   | Yes       |
+| 6  | Budget curve reports both accuracy and macro-F1 per step                                                             | Yes       |
+| 7  | AUC-vs-labels is computed per strategy and reported                                                                 | Yes       |
+| 8  | Report pins seed, config SHA, strategy list, and budget total                                                       | Yes       |
+| 9  | Recommendation includes a reason                                                                                     | Yes       |
+| 10 | Label Studio ML backend adapter exists and implements `predict` + `fit`                                             | No        |
+| 11 | `peer_review.status` defaults to `pending_review`                                                                    | Yes       |
+| 12 | Governance anchors (OWASP ML Top 10 ML02, MITRE ATLAS AML.T0020, NIST AI RMF MEASURE 2.3 / 2.11) cited                | No        |
+| 13 | Common-mistake list covers cold start, class imbalance, and strategy-in-production-vs-simulation                     | No        |
 
 ## 5. Common mistakes
 
-- **Reporting raw accuracy.** On an imbalanced dataset, uncertainty
-  sampling can hollow out a class and raise accuracy while the
-  model gets worse at that class. Macro-F1 or balanced accuracy
-  catches it.
-- **Running a single seed.** A single seed cannot distinguish
-  "uncertainty beat random" from "uncertainty was lucky". CIs
-  across seeds are the answer.
-- **Comparing at round indices, not budgets.** If `random` picks
-  120 items per round and `uncertainty` picks 100, round 5 is not
-  a fair comparison. The x-axis must be `labeled_count`.
-- **Non-deterministic tie-break in selection.** Many pool items
-  share identical uncertainty scores on small datasets; randomised
-  `argpartition` ordering drifts the trace. Lexicographic
-  tie-break by index fixes it.
-- **Hidden data leak via vectorisation choices.** Fit the vectoriser
-  on `x_labeled` or on `x_labeled ∪ x_pool` *without the test set*.
-  Fitting on the test set leaks structure and inflates the curve.
-- **Not auditing class representation.** An AL run that drives a
-  class to < 1% of the labeled set is a fairness regression even if
-  macro-F1 stays flat. Track and report per-class counts.
-- **"We beat random by 0.2 F1 at round 3" without CIs.** 0.2 F1
-  across seeds has a large interval on a 1200-item schedule; the
-  "win" may be within noise. The curve with CIs is the honest
-  artefact.
-- **Hardcoding dataset path.** Make the dataset loader respect a
-  fingerprint check so the report proves which dataset version
-  was used.
-- **Letting the model's own `random_state` drift seed-to-seed.**
-  `random_state=args.seed` ties the model fit to the experiment
-  seed; mixing a global RNG in kills reproducibility.
-- **Reporting the crossover budget as absolute with no margin.**
-  Any strategy beats any other by 0.001 at some round if you look
-  hard enough. The margin (`crossover_margin: 0.01`) is the
-  honest control.
+- **Running without random as a baseline.** Without a baseline,
+  any curve looks impressive. Random is the control.
+- **Warm-starting the model.** Retraining from scratch each
+  round is slow but the budget curve is the point; a warm-start
+  curve measures warm-start artifacts, not acquisition quality.
+- **Letting the strategy see the gold set.** The gold pool is
+  the evaluation surface. A strategy that queries gold is
+  cheating; the test suite must prove the leak cannot happen.
+- **Reporting accuracy only.** On imbalanced data accuracy is
+  a bad proxy. Macro-F1 is the minimum additional signal; per-
+  class F1 is better.
+- **Ignoring the cold-start regime.** Early-round models are
+  terrible classifiers; their uncertainty signal is also
+  terrible, so uncertainty strategies can be WORSE than random
+  for the first few rounds. Report the first N rounds honestly
+  rather than cherry-picking a later crossover.
+- **Vote-entropy with a committee of 2.** The committee must be
+  big enough to produce informative entropy; the default of 5
+  is the minimum.
+- **Pinning a winner that does not dominate random on AUC.** A
+  strategy that beats random at the budget cap but loses on
+  AUC saved no budget; the recommendation function rejects it
+  for a reason.
+- **Writing non-deterministic code.** Any `random.random()` or
+  `np.random.randn()` without a seed invalidates the budget-
+  curve experiment. The determinism test catches this.
+- **Shipping the simulated strategy straight to production.** A
+  simulation where the "labeler" is the gold column is a lower
+  bound on real-world noise. Validate in a Label Studio project
+  against real labelers before declaring the strategy useful.
 
 ## 6. References
 
-- **NIST AI Risk Management Framework — MEASURE 2.3, MEASURE 2.11:**
-  <https://www.nist.gov/itl/ai-risk-management-framework>. MEASURE
-  2.3 anchors the budget-matched metric comparison; MEASURE 2.11
-  anchors the class-representation audit that an AL policy can
-  degrade.
+- **Settles, B. (2009). "Active Learning Literature Survey."
+  Computer Sciences Technical Report 1648, University of
+  Wisconsin–Madison.**
+  <https://minds.wisconsin.edu/handle/1793/60660>. The survey
+  the strategy palette is drawn from; cite §2.1 for
+  uncertainty sampling and §2.2 for query-by-committee.
+- **scikit-learn user guide — `LogisticRegression`,
+  `TfidfVectorizer`, `Pipeline`:**
+  <https://scikit-learn.org/stable/user_guide.html>. Primary
+  source for the classifier choice and determinism via
+  `random_state`.
+- **Label Studio documentation — ML Backend:**
+  <https://labelstud.io/guide/ml.html>. Primary source for the
+  `predict` / `fit` ML-backend contract the `ls_backend.py`
+  file implements.
 - **OWASP Machine Learning Security Top 10 — ML02:2023 Data
   Poisoning Attack:**
   <https://owasp.org/www-project-machine-learning-security-top-10/>.
-  AL policies that always-pick-maximally-uncertain items are
-  attractive targets for pool poisoning; the canary experiment in
-  §3.7 surfaces the signature.
+  Governance anchor — a biased acquisition strategy is a
+  poisoning channel.
 - **MITRE ATLAS — AML.T0020 Poison Training Data:**
-  <https://atlas.mitre.org/>. The adversary-facing anchor.
-- **Settles, B. (2009) "Active Learning Literature Survey."**
-  University of Wisconsin–Madison Technical Report 1648. The
-  canonical taxonomy of AL strategies (least-confidence, margin,
-  entropy, query-by-committee) the implementation in §2.4 maps to.
-- **Lewis, D. & Gale, W. (1994) "A Sequential Algorithm for
-  Training Text Classifiers."** SIGIR 1994. The least-confidence
-  (uncertainty) baseline the exercise implements.
-- **Scheffer, T., Decomain, C., & Wrobel, S. (2001) "Active Hidden
-  Markov Models for Information Extraction."** Introduces margin
-  sampling.
-- **scikit-learn `LogisticRegression`:**
-  <https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.LogisticRegression.html>.
-  The model used for the illustrative experiment; probabilities are
-  well-calibrated out of the box, which is what the AL scorers need.
-- **Local anchors:** `mod-107` ex-01 (the labeling policy whose
-  per-round budget this exercise informs); `mod-107` ex-03 (the
-  IAA tool that gates each round's labels before they enter the
-  labeled set); `mod-111` (quality-regression monitor that
-  consumes the curve metadata to detect AL-driven drift).
+  <https://atlas.mitre.org/>. Adversary-facing anchor.
+- **NIST AI Risk Management Framework — MEASURE 2.3 (performance
+  as intended), MEASURE 2.11 (fairness and bias):**
+  <https://www.nist.gov/itl/ai-risk-management-framework>.
+  Governance anchors for the measurement surface and the per-
+  slice recall requirement.
+- **Local anchors:** Exercise 01 (Label Studio project the ML
+  backend attaches to); Exercise 03 (IAA on labels the AL loop
+  queries); Exercise 05 (Snorkel weak supervision as an
+  alternative labeling-cost strategy); `mod-109` (records the
+  budget curve and the model weights per round in lineage);
+  `mod-111` (trends budget-curve AUC across weekly reruns).

@@ -1,474 +1,630 @@
 # Exercise 02 — Vendor RFP and Vendor-Audit Authoring (Solution)
 
+> **Exercise-prompt note.** The paired learning file
+> (`exercise-02-vendor-rfp-and-vendor-audit-authoring.md` in the
+> `ai-data-engineer-learning` repo) is not visible from the
+> solutions repo at generation time. This solution is grounded in
+> the exercise title, the module README, and the official
+> frameworks cited in §6 (NIST AI RMF, OWASP ML Top 10, MITRE
+> ATLAS). Any divergence from the exercise prompt once it is
+> pinned should re-ground against those sources.
+> <!-- pending-verify: re-check against the exercise prompt once
+> the learning file is reachable to confirm page budget and
+> required vendor categories. -->
+
 ## 1. Solution overview
 
-This is a **design** exercise. The learner authors two documents:
+This is a **design** exercise. The learner authors two linked
+artifacts: a **Request For Proposal (`RFP.md`)** that the team
+sends to candidate annotation vendors, and a **Vendor Audit
+Workbook (`AUDIT.md` plus `audit_checklist.yaml`)** that a peer
+auditor can run against a signed vendor the team is already
+working with. The two artifacts share one data model: everything
+the RFP asks a vendor to commit to is something the audit later
+measures against.
 
-1. A **Request for Proposal (RFP)** that a labeling vendor replies to
-   with evidence (not marketing). The RFP is the written selection
-   control: a vendor that cannot answer it is not eligible to
-   handle training data.
-2. A **vendor audit plan** that runs quarterly against the selected
-   vendor. The audit converts the RFP's promises into measured
-   evidence — annotator compensation, pool composition, quality
-   outcomes, security posture, data-handling behaviour on real
-   samples.
+Deliverables:
 
-Both documents are artifacts, not informational writeups. A reviewer
-should be able to run the RFP as a scorecard and run the audit as a
-checklist against vendor-provided evidence files.
+- `RFP.md` — the Request For Proposal. Six sections, one signatory
+  on the sending side (ai-data-engineer), one signatory on the
+  responding side (vendor account manager). SemVer at the document
+  level.
+- `audit_checklist.yaml` — a machine-readable checklist whose keys
+  are the RFP's asks. Status enum: `pass | fail | needs-evidence`.
+- `AUDIT.md` — the human-readable audit guide. Walks a peer
+  through how to execute each item in `audit_checklist.yaml`.
+- `scoring/rubric.md` — the RFP-response scoring rubric. 0/1/2
+  per row, with critical rows that any zero fails the whole
+  response.
+- `rationale.md` — the decision log. For each RFP clause: what it
+  prevents, what it does not prevent, and what weakens if the
+  clause is dropped.
+- `worked_example/` — a redacted, worked example RFP response and
+  a corresponding worked audit run. Uses placeholder vendor
+  names. No real vendor names unless the learner has primary-source
+  citations.
 
-Governance framing. Labeling vendors are a **third-party data supply
-chain** for the training set, so the control anchor is **NIST AI RMF
-GOVERN 4.1** (accountability and oversight of third parties) combined
-with **MANAGE 3.1** (third-party risk). The adversary-facing anchor
-is **MITRE ATLAS AML.T0020 Poison Training Data** (a compromised or
-coerced vendor is a plausible poisoning path) and **AML.T0010 ML
-Supply Chain Compromise**. **OWASP ML Top 10 ML02:2023 Data
-Poisoning Attack** is the control objective, and **ML06:2023 AI
-Supply Chain Attacks** names the threat surface directly. Cite the
-URLs under §6; do not paraphrase.
+The exercise is design-only. No vendor is actually onboarded; the
+learner demonstrates they can specify a vendor relationship that
+the rest of `mod-107` (IAA in Exercise 03, active learning in
+Exercise 04, DPO labeling in Exercise 06) can plug into
+without rewriting.
 
-## 2. Implementation — worked answer
+Governance framing. An annotation vendor is a third-party data
+producer whose output enters the training set. The NIST AI Risk
+Management Framework anchor is **GOVERN 6.1** (policies and
+procedures are in place to address AI risks and benefits arising
+from third-party software and data), reinforced by **GOVERN 6.2**
+(contingency processes for third-party AI failures). OWASP ML Top
+10 **ML06:2023 ML Supply Chain Vulnerabilities** is the harm
+anchor — a vendor is an upstream supply-chain link. **ML02:2023
+Data Poisoning Attack** is the downstream harm the audit
+prevents (a vendor shipping systematically biased or adversarially
+labeled data). MITRE ATLAS **AML.T0019 Publish Poisoned Datasets**
+is the adversary-facing technique for a hostile or compromised
+vendor. Cite the framework URLs rather than paraphrasing the
+control text.
+
+## 2. Implementation — worked answer (the two artifacts)
 
 ### 2.1 Project layout
 
 ```
 exercise-02/
 ├── README.md
-├── rfp/
-│   ├── 00_cover.md
-│   ├── 01_scope_and_eligibility.md
-│   ├── 02_commercial.md
-│   ├── 03_quality.md
-│   ├── 04_workforce.md
-│   ├── 05_security_and_data_handling.md
-│   ├── 06_governance_and_compliance.md
-│   ├── 07_exit_and_portability.md
-│   ├── 08_scoring_rubric.md
-│   └── 99_evidence_manifest.md
-├── audit/
-│   ├── audit_plan.md
-│   ├── sample_selection.md
-│   ├── interview_questions.md
-│   ├── canary_protocol.md
-│   ├── findings_template.md
-│   └── remediation_tracker.md
-└── artifacts/
-    ├── decision_log.md             # vendor selection decision + sign-offs
-    └── quarterly_audit_report.md   # filled from findings_template each quarter
+├── RFP.md
+├── audit_checklist.yaml
+├── AUDIT.md
+├── scoring/
+│   └── rubric.md
+├── rationale.md
+└── worked_example/
+    ├── vendor_response.md
+    ├── audit_run.yaml
+    └── scorecard.md
 ```
 
-### 2.2 RFP — scope and eligibility (`rfp/01_scope_and_eligibility.md`)
+### 2.2 `RFP.md` — structure
 
 ```markdown
-# Section 1 — Scope and eligibility
+# Request For Proposal — Annotation Services, program v1
 
-## 1.1 Program description
-Program <program-id> labels <N> items/week for the <task> task family
-(see `taxonomy.yaml` and `policy_note.md` from mod-107 ex-01 — attached).
+| Field                  | Value                                                     |
+|------------------------|-----------------------------------------------------------|
+| RFP version            | 1.0.0                                                     |
+| Issued                 | 2026-11-17                                                |
+| Issuing team           | ai-data-engineer (project `mod-107`)                      |
+| Signatory (issuer)     | <ai-data-engineer email>                                  |
+| Signatory (responder)  | vendor account manager                                    |
+| Response window        | 21 calendar days from issue                               |
+| Confidentiality        | Responses are mutual NDA from issue. Sample data is DO-NOT-RETRAIN.|
+| Supersedes             | n/a                                                       |
 
-## 1.2 Eligibility prerequisites
-A vendor is **ineligible** (no score) if any of the following is false:
+## 1. Scope of work
 
-- Can commit, in writing, to the per-annotator per-batch cap in
-  §3.3 of our labeling policy (≤ 15% share).
-- Operates within jurisdictions that accept our DPA template
-  (GDPR + CCPA counterpart; signed before any sample data flows).
-- Has a documented information-security certification in force —
-  SOC 2 Type II, ISO/IEC 27001:2022, or equivalent — issued within
-  the last 12 months.
-- Can accept sample data via a customer-controlled bucket with
-  logged, scoped IAM — **no attachments, no public shares, no
-  "test" credentials**.
-- Does not sub-contract labeling to crowdsourced platforms without
-  prior written approval for *that* program.
+Describe the labeling program the vendor would run. Pin one
+answer per numbered item; "to be confirmed" is a response-breaking
+answer on items (a)–(e).
 
-## 1.3 Submission mechanics
-- Respond section by section; do not merge sections.
-- Attach evidence (certificates, redacted sample QA reports, pay
-  schedules) via the evidence manifest in §99. Unsupported claims
-  score zero in that row.
+(a) Program volume: expected monthly task count and per-task
+cost unit (per-task, per-hour, per-span).
+(b) Label schema version the vendor will implement (see attached
+`task_record.schema.json` from Exercise 01).
+(c) Languages in scope. For non-English, the vendor commits to
+native-speaker annotators only; attestation required.
+(d) Modality: text, image, audio, video, or a mix. Each modality
+has a separate price line.
+(e) PII posture: whether tasks contain PII, and whether the
+vendor's workforce may see it. See §4 for the required attestation.
+
+## 2. Workforce composition and governance
+
+The vendor commits to the following, measurable per quarter:
+
+(a) Headcount of trained annotators per language.
+(b) Reviewer-to-annotator ratio (minimum 1:5).
+(c) Annotator turnover rate (reported as the fraction of
+annotators who left the project in the preceding 90 days).
+(d) Attested worker compensation model: hourly, per-task, or
+hybrid. Per-task-only models require a measured minimum effective
+hourly rate at the local statutory wage floor; the vendor
+reports this number quarterly.
+(e) Worker welfare contact: a named point of contact at the vendor
+for wage, safety, and content-exposure concerns. Required to be a
+natural person, not an alias.
+
+## 3. Quality program
+
+(a) Inter-annotator agreement baseline: vendor commits to a
+baseline IAA (e.g., Cohen's kappa ≥ 0.7) on a double-labeled
+cohort, measured per label set, reported weekly.
+(b) Gold-set hit rate: vendor commits to a minimum
+precision/recall against the issuer-provided gold set, reported
+weekly.
+(c) Review-rejection rate: vendor caps review-rejection at a
+stated ceiling; anything above the ceiling triggers §6.
+(d) Guidelines version the workforce is operating under; the
+vendor confirms within three business days of a guidelines
+update.
+(e) Calibration cadence: initial and monthly calibration sessions
+between vendor leads and issuer leads.
+
+## 4. Data handling and PII
+
+(a) Data at rest and in transit is encrypted (TLS 1.2+ in
+transit, AES-256 at rest). Attest.
+(b) Annotators access data only through the labeling platform
+(no local downloads, no screenshots allowed).
+(c) PII-sensitive projects require workforce under the vendor's
+PII-training program, with the training completion record
+auditable.
+(d) Data residency: issuer names the acceptable countries; vendor
+states where the workforce and the infrastructure sit.
+(e) Retention: vendor deletes raw task data within N days of
+program end, per issuer policy. Attest the deletion window.
+
+## 5. Security posture
+
+(a) Named security certifications in force (e.g., ISO/IEC 27001,
+SOC 2 Type II), with certificate numbers and expiry dates. Vendor
+provides the certificates on request.
+(b) Named recent third-party security audit; summary available
+on request under NDA.
+(c) Incident-response SLA: stated time to notify issuer of a
+suspected data incident.
+(d) Subprocessor list: current, with roles and data-exposure
+scope per subprocessor.
+
+## 6. Hand-off, measurement, and dispute
+
+(a) Hand-off format: the normalised task-record schema from
+Exercise 01. Vendor does not define its own export format.
+(b) Measurement surface: vendor agrees to the rows in §4 of the
+`CONTRACT` sibling document (see mod-106 exercise-04 for an
+example measurement-surface table; this RFP uses the same shape).
+(c) Dispute path: a disputed batch is held; vendor and issuer
+root-cause within five business days.
+(d) Termination-for-cause triggers: (i) a batch found to be
+systematically poisoned, (ii) workforce welfare violation, (iii)
+a security incident the vendor failed to disclose within the §5
+SLA.
+(e) Termination-for-convenience notice: 30 calendar days.
+
+## 7. Pricing and payment
+
+(a) Per-unit price per modality.
+(b) Volume tiers.
+(c) Payment cadence: net 30 default, open to negotiation.
+(d) Price escalation: at most CPI-indexed, written notice 60 days
+in advance.
+
+## 8. Response format
+
+- A written response to §§1–7 in Markdown, PDF, or DOCX.
+- A completed `audit_checklist.yaml` with status
+  `needs-evidence` on every item the vendor will provide at
+  onboarding, and `pass` or `fail` on every item answerable
+  at RFP time.
+- One reference customer the issuer may contact directly.
+- Three illustrative vendor outputs (or synthetic equivalents),
+  so issuer leads can calibrate the vendor's label quality
+  before any contract is signed.
+
+## 9. Signatures
+
+<cosign signature paths or equivalent>
 ```
 
-### 2.3 RFP — commercial (`rfp/02_commercial.md`)
+The RFP is intentionally section-numbered and cross-referenced
+from `audit_checklist.yaml`. Section numbers are stable across
+minor version bumps; renumbering is a major bump.
+
+### 2.3 `audit_checklist.yaml`
+
+Each check has a stable key, a reference back to the RFP section
+that defined the ask, an evidence type (`doc | observation |
+query | attestation`), and a default status of `needs-evidence`.
+The auditor fills the status in during an audit run.
+
+```yaml
+# audit_checklist.yaml  — v1.0.0
+rfp_version: 1.0.0
+checks:
+  - id: scope.volume
+    rfp_ref: "1(a)"
+    description: Vendor reports monthly task volume and per-unit cost.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: scope.label_schema
+    rfp_ref: "1(b)"
+    description: Vendor outputs match `task_record.schema.json` v1.0.0.
+    evidence_type: query
+    evidence_query: "jsonschema -i vendor_batch.json task_record.schema.json"
+    status: needs-evidence
+
+  - id: workforce.ratio
+    rfp_ref: "2(b)"
+    description: Reviewer-to-annotator ratio ≥ 1:5.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: workforce.turnover
+    rfp_ref: "2(c)"
+    description: Annotator 90-day turnover rate stated.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: workforce.compensation
+    rfp_ref: "2(d)"
+    description: Effective hourly rate at or above local statutory wage.
+    evidence_type: attestation
+    status: needs-evidence
+
+  - id: workforce.welfare_contact
+    rfp_ref: "2(e)"
+    description: Named natural person at the vendor for welfare concerns.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: quality.iaa_baseline
+    rfp_ref: "3(a)"
+    description: IAA baseline (kappa or Krippendorff) committed per label set.
+    evidence_type: query
+    evidence_query: "see mod-107 exercise-03"
+    status: needs-evidence
+
+  - id: quality.gold_hit
+    rfp_ref: "3(b)"
+    description: Weekly gold-set hit-rate committed and reported.
+    evidence_type: observation
+    status: needs-evidence
+
+  - id: quality.review_rejection
+    rfp_ref: "3(c)"
+    description: Review-rejection rate ceiling stated.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: data.encryption
+    rfp_ref: "4(a)"
+    description: TLS 1.2+ in transit, AES-256 at rest.
+    evidence_type: attestation
+    status: needs-evidence
+
+  - id: data.no_local_copy
+    rfp_ref: "4(b)"
+    description: Annotators cannot download, export, or screenshot tasks.
+    evidence_type: observation
+    status: needs-evidence
+
+  - id: data.pii_training
+    rfp_ref: "4(c)"
+    description: Workforce under the PII-training program (auditable record).
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: data.residency
+    rfp_ref: "4(d)"
+    description: Workforce and infrastructure sit in approved countries.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: data.retention
+    rfp_ref: "4(e)"
+    description: Deletion window stated and enforced in writing.
+    evidence_type: attestation
+    status: needs-evidence
+
+  - id: security.certifications
+    rfp_ref: "5(a)"
+    description: ISO/IEC 27001 or SOC 2 Type II or equivalent, in force.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: security.audit
+    rfp_ref: "5(b)"
+    description: Recent independent security audit summary available.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: security.incident_sla
+    rfp_ref: "5(c)"
+    description: Incident-response notification SLA ≤ 72 hours.
+    evidence_type: attestation
+    status: needs-evidence
+
+  - id: security.subprocessors
+    rfp_ref: "5(d)"
+    description: Subprocessor list current and reviewed.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: handoff.schema
+    rfp_ref: "6(a)"
+    description: Vendor exports via `task_record.schema.json` without custom fields.
+    evidence_type: query
+    evidence_query: "jsonschema -i vendor_batch.json task_record.schema.json"
+    status: needs-evidence
+
+  - id: handoff.measurement
+    rfp_ref: "6(b)"
+    description: Vendor emits the measurement-surface columns weekly.
+    evidence_type: query
+    status: needs-evidence
+
+  - id: handoff.dispute
+    rfp_ref: "6(c)"
+    description: Dispute path and 5-business-day SLA accepted.
+    evidence_type: doc
+    status: needs-evidence
+
+  - id: handoff.termination_triggers
+    rfp_ref: "6(d)"
+    description: Named termination-for-cause triggers accepted.
+    evidence_type: doc
+    status: needs-evidence
+```
+
+### 2.4 `AUDIT.md` — how to run the checklist
 
 ```markdown
-# Section 2 — Commercial
+# Vendor audit workbook — v1.0.0
 
-| # | Question                                                             | Evidence required                    |
-|---|----------------------------------------------------------------------|--------------------------------------|
-| 2.1 | Unit cost per annotation at p50 complexity in our taxonomy          | Pricing schedule, sample complexity map |
-| 2.2 | Price for a rework cycle triggered by failed IAA                    | Pricing schedule                     |
-| 2.3 | Minimum batch commitment and surge capacity (weeks to +50%)          | Capacity letter from operations lead |
-| 2.4 | Payment terms, invoice cadence, and currency                         | Draft MSA excerpt                    |
-| 2.5 | What the vendor does when we pause or cancel a batch mid-flight      | Termination clause draft             |
+## 1. When to run
+
+- Quarterly for every vendor on an active program.
+- Unscheduled, within five business days, on any of:
+  (i) a batch flagged for systematic quality regression by
+  mod-111;
+  (ii) a disclosed security incident at the vendor;
+  (iii) a workforce-welfare complaint received by the issuer.
+
+## 2. Preparation
+
+- Load `audit_checklist.yaml`. Confirm the `rfp_version` matches
+  the contract in force.
+- Pull the vendor's most recent `vendor_batch.json` export.
+- Pull the measurement-surface rows for the last four weeks.
+
+## 3. Executing a check
+
+For each entry:
+
+- `evidence_type: doc` — request the document; record its SHA-256
+  in `audit_run.yaml`.
+- `evidence_type: query` — run the command in `evidence_query`;
+  attach the exit code and a short summary of the output.
+- `evidence_type: observation` — the auditor observes a live
+  labeling session or a recorded sample; record who observed and
+  when.
+- `evidence_type: attestation` — written attestation signed by
+  the vendor; record the signer and the signature SHA-256.
+
+Set the check's status to `pass`, `fail`, or (if evidence is
+still outstanding) `needs-evidence`. Every `fail` requires a
+root-cause note and an owner.
+
+## 4. Scoring the run
+
+Audit passes if:
+- Every critical check (`scope.*`, `handoff.schema`,
+  `handoff.measurement`, `data.encryption`, `data.no_local_copy`,
+  `security.incident_sla`, `workforce.compensation`) is `pass`.
+- Overall fail rate across non-critical checks is below 20%.
+
+Otherwise the audit fails and the vendor enters the §6-dispute
+path.
+
+## 5. Writing the audit report
+
+A one-page summary of pass/fail totals, open findings, and the
+auditor's recommendation: {continue, continue-with-remediation,
+suspend, terminate}. Signed by the auditor (not the ai-data-
+engineer running the program).
 ```
 
-### 2.4 RFP — quality (`rfp/03_quality.md`)
+### 2.5 `scoring/rubric.md`
 
 ```markdown
-# Section 3 — Quality
+# RFP-response scoring rubric — v1.0.0
 
-| #   | Question                                                                                            | Evidence required                                     |
-|-----|-----------------------------------------------------------------------------------------------------|-------------------------------------------------------|
-| 3.1 | Historical IAA on comparable tasks — report **Cohen's κ** and **Krippendorff's α** per batch, p50 / p90 | Last 6 batches, anonymised                            |
-| 3.2 | Gold-set calibration procedure for seating a new annotator                                           | Internal SOP, redacted                                |
-| 3.3 | Review (adjudication) coverage policy and reviewer-to-annotator ratio                                | Ratio history for the last 90 days                    |
-| 3.4 | What triggers a batch reopen on your side (not ours)                                                 | Policy document                                        |
-| 3.5 | Rationale-field or free-text capture for every annotation (yes/no)                                   | Screenshot of task UI                                 |
-| 3.6 | How vendor detects and handles an annotator whose canary accuracy drops mid-batch                     | Written procedure + redacted example                  |
+Each row scored 0/1/2 (0 = missing, 1 = present but shallow,
+2 = defensible with evidence). Pass threshold: ≥ 20/28 with no
+zeros on critical rows.
+
+| #  | Row                                                                                             | Critical? |
+|----|-------------------------------------------------------------------------------------------------|-----------|
+| 1  | Scope section pins volume, modality, languages, and label-schema version                        | Yes       |
+| 2  | Workforce compensation line answers the attestation (rate, local wage floor)                    | Yes       |
+| 3  | Workforce welfare contact is a natural person                                                   | Yes       |
+| 4  | IAA baseline and gold-hit baseline stated per label set                                         | Yes       |
+| 5  | PII attestation present if any task may contain PII                                             | Yes       |
+| 6  | Data-residency answer names countries, not regions                                              | Yes       |
+| 7  | Security certifications in force and dated                                                      | Yes       |
+| 8  | Incident-response SLA ≤ 72 hours                                                                | Yes       |
+| 9  | Subprocessor list present and not "on request"                                                  | No        |
+| 10 | Hand-off uses `task_record.schema.json` without custom fields                                   | Yes       |
+| 11 | Dispute SLA ≤ 5 business days accepted                                                          | Yes       |
+| 12 | Termination-for-cause triggers listed verbatim                                                  | No        |
+| 13 | Pricing structure is per-unit plus volume tiers, not opaque                                     | No        |
+| 14 | Response includes one contactable reference and three example outputs                           | No        |
 ```
 
-The IAA questions must ask for both κ **and** α — vendors that can
-only report one of the two have not instrumented the pipeline mod-107
-ex-03 will require.
+### 2.6 `rationale.md` — decision log
 
-### 2.5 RFP — workforce (`rfp/04_workforce.md`)
+Representative entries:
 
-```markdown
-# Section 4 — Workforce
+- **§2(d) workforce compensation attestation is load-bearing.**
+  Per-task-only pay with no measured effective hourly rate
+  creates pressure to rush low-quality labels at or below a
+  statutory wage floor. The attestation closes the "the market
+  sets the price" loophole that some vendors invoke to avoid
+  disclosing worker pay.
+- **§3(a) IAA baseline committed before onboarding.** Measuring
+  IAA post-hoc ("we'll tell you what our IAA was last quarter")
+  lets a vendor cherry-pick metrics. Committing a baseline in the
+  RFP makes the target prospective.
+- **§4(b) no local downloads is a hard line.** Any vendor that
+  allows local copies of task data has, in practice, an
+  uncontrolled retention policy — the data can be exfiltrated
+  through a worker's device even if the vendor's servers are
+  compliant.
+- **§5(c) 72-hour incident-response SLA.** A longer SLA (seven
+  days, "best effort") makes it impossible for the issuer to
+  meet its own downstream notification obligations.
+- **§6(a) hand-off format is the issuer's schema.** This prevents
+  the "vendor emits a custom CSV" pattern that forces the issuer
+  to maintain N bespoke adapters. The schema is version-pinned
+  in Exercise 01; renaming or dropping fields is a contract-
+  version bump.
+- **§6(d) termination-for-cause triggers listed explicitly.**
+  Reserving termination-for-cause to "the issuer's reasonable
+  judgement" is a non-starter. A named list prevents disputes
+  about whether a given failure is in scope.
+- **Audit `workforce.compensation` is `attestation`, not `doc`.**
+  Vendors rarely share pay stubs. A signed attestation with the
+  vendor's name on it is the enforceable surface.
 
-| #   | Question                                                                                                     | Evidence required                   |
-|-----|--------------------------------------------------------------------------------------------------------------|-------------------------------------|
-| 4.1 | Hourly take-home pay for labelers on this program (gross and net of platform fees), by jurisdiction          | Pay schedule, redacted              |
-| 4.2 | Does take-home pay meet or exceed the local living-wage benchmark cited by vendor? Provide the benchmark URL.| Benchmark citation + attestation    |
-| 4.3 | Hours worked per labeler per week, p50 and p95, measured over last 90 days                                   | HR extract, redacted                |
-| 4.4 | Mental-health / well-being programs for annotators exposed to sensitive content                              | Program description + uptake data   |
-| 4.5 | Representation of language / dialect / geographic coverage in the annotator pool for our languages           | Pool composition statement          |
-| 4.6 | Right-to-refuse policy: can a labeler decline a task and not lose session pay?                                | Written policy + example invocation |
-| 4.7 | Employment classification (W-2/equivalent vs. contractor) per jurisdiction                                    | Employment summary                  |
-```
+### 2.7 `worked_example/`
 
-Workforce questions are **not optional** and are not low-weight.
-Under-paid or over-worked annotators produce lower-quality labels
-and raise OWASP ML Top 10 ML02 insider-risk; this section is both an
-ethics and a quality control.
+`worked_example/vendor_response.md` is a short, redacted vendor
+response that touches every RFP section with placeholder values
+(e.g., company name `VendorCo`, pricing in `$X per task`). It is
+illustrative, not a template to be shipped verbatim.
 
-### 2.6 RFP — security and data handling (`rfp/05_security_and_data_handling.md`)
+`worked_example/audit_run.yaml` fills `audit_checklist.yaml` with
+realistic statuses — most `pass`, a few `fail`, one
+`needs-evidence` for a subprocessor list that is "available on
+request".
 
-```markdown
-# Section 5 — Security and data handling
-
-| #   | Question                                                                                           | Evidence required                       |
-|-----|----------------------------------------------------------------------------------------------------|-----------------------------------------|
-| 5.1 | Security certifications and their effective dates                                                  | SOC 2 / ISO 27001 report excerpt         |
-| 5.2 | Where is sample data stored — region, provider, encryption at rest, encryption in transit          | Infra diagram + control statement        |
-| 5.3 | Annotator client controls — clipboard, screen capture, VDI, personal-device usage                  | Workstation policy + configuration proof |
-| 5.4 | Logging of annotator actions (who-saw-what) — retention and query access for the customer          | Log schema sample                        |
-| 5.5 | How is sample data destroyed at batch close or contract end                                        | Deletion SOP + destruction attestation   |
-| 5.6 | Breach-notification SLA (hours) and 24-hour contact                                                | Incident-response policy                  |
-| 5.7 | Sub-processor list for data in scope (hosting, QA tools, messaging)                                 | Sub-processor register                   |
-| 5.8 | Does the vendor use any data (ours or inferred) to train or improve a model?                        | Written attestation (binding)            |
-```
-
-Row 5.8 is the training-use lock: a vendor who reserves a right to
-train on customer data is disqualified under our policy. The
-attestation must be binding in the MSA, not just the RFP.
-
-### 2.7 RFP — governance (`rfp/06_governance_and_compliance.md`)
-
-```markdown
-# Section 6 — Governance and compliance
-
-| #   | Question                                                                                                      | Evidence required                           |
-|-----|---------------------------------------------------------------------------------------------------------------|---------------------------------------------|
-| 6.1 | Jurisdictions where annotators work and applicable labour / data-protection regimes                            | Jurisdiction map                            |
-| 6.2 | DPA / Standard Contractual Clauses for cross-border transfers                                                  | Draft DPA                                   |
-| 6.3 | Child-safety policy for annotators under 18 (default: not permitted on this program)                            | Age-verification policy                     |
-| 6.4 | Hate/violence/abuse content rotation policy and content-exposure caps per labeler per day                      | Policy document                              |
-| 6.5 | AI-assistance policy for annotators — are they permitted to paste tasks into external LLMs?                    | Policy document + enforcement mechanism     |
-| 6.6 | Whistleblower / anonymous reporting channel accessible to annotators                                            | Channel description                         |
-| 6.7 | Named data-protection officer (DPO) and their jurisdiction                                                     | Contact                                     |
-```
-
-Row 6.5 is non-negotiable: unapproved LLM assistance leaks our prompts
-and injects synthetic labels. The *enforcement mechanism* matters more
-than the policy — "we trust our labelers" is not an enforcement
-mechanism.
-
-### 2.8 RFP — exit and portability (`rfp/07_exit_and_portability.md`)
-
-```markdown
-# Section 7 — Exit and portability
-
-| #   | Question                                                                 | Evidence required         |
-|-----|--------------------------------------------------------------------------|---------------------------|
-| 7.1 | Data return format at contract exit (JSONL / Parquet / CSV + schema)      | Sample export             |
-| 7.2 | Deletion attestation deliverable at exit — content and signing authority  | Attestation template      |
-| 7.3 | How long are labels, logs, and sample data retained after exit            | Retention schedule        |
-| 7.4 | Named successor path — can our next vendor ingest your exports as-is?     | Export schema + documentation |
-```
-
-### 2.9 RFP — scoring rubric (`rfp/08_scoring_rubric.md`)
-
-Score each row 0 / 1 / 2 / 3; weights below sum to 100. Any
-eligibility failure in §1.2 is terminal.
-
-| Section | Weight | What a 3 looks like                                                                                           |
-|---------|--------|---------------------------------------------------------------------------------------------------------------|
-| 2 (Commercial)              | 10 | Price schedule itemised by complexity; rework priced separately; capacity letter signed by ops lead.           |
-| 3 (Quality)                 | 25 | κ and α reported per batch for 6 batches; reviewer ratio > 1:10; mid-batch canary-drop response documented.    |
-| 4 (Workforce)               | 25 | Pay > cited local living-wage benchmark; hours cap enforced; right-to-refuse invoked at least once in logs.    |
-| 5 (Security + data)         | 20 | SOC 2 Type II or ISO 27001 current; no-training attestation binding; destruction SOP demonstrates witness.      |
-| 6 (Governance + compliance) | 15 | AI-assistance enforcement tooled (clipboard controls, DLP); whistleblower channel independently administered.   |
-| 7 (Exit + portability)      | 5  | Schema-documented export; deletion attestation template already drafted.                                        |
-
-Sections 3, 4, and 5 are dominant by design — labeling quality,
-workforce conditions, and data security are the three axes that
-distinguish responsible vendors from marketing.
-
-### 2.10 Audit plan (`audit/audit_plan.md`)
-
-```markdown
-# Vendor audit — quarterly
-
-## Purpose
-Convert RFP promises into measured evidence. An audit finding is
-either **confirmed**, **refuted**, or **inconclusive** — never a
-narrative.
-
-## Cadence
-- **Quarterly** full audit (this document).
-- **Triggered** audit on: a canary-accuracy drop ≥ 10 pp in a single
-  batch; a pay or hours complaint through the whistleblower channel;
-  a reported sub-processor change; a security incident at the vendor
-  or any of its sub-processors.
-
-## Scope
-1. Quality — sample 50 adjudicated items per batch across the
-   quarter; re-adjudicate by an independent reviewer; compute κ and
-   α against the vendor-reported numbers. Delta > 0.05 is a finding.
-2. Workforce — request redacted pay stubs / hours extracts for a
-   random 5% of annotators on our program; compare against the
-   vendor's RFP answers and the local living-wage benchmark.
-3. Security — request fresh evidence for every §5 item; witness one
-   destruction event; replay 24 hours of annotator-action logs for
-   a chosen batch; check sub-processor register deltas.
-4. Governance — interview three annotators (via the vendor's
-   independent channel) with the questions in `interview_questions.md`;
-   re-verify DPA signatures; check AI-assistance enforcement logs.
-
-## Deliverables
-- `findings_template.md` filled per section.
-- Remediation items opened in `remediation_tracker.md` with owners
-  and 30/60/90-day deadlines.
-- Sign-off from the AI-data-engineer, the data-governance lead, and
-  the vendor's account owner on the quarterly report.
-```
-
-### 2.11 Sample selection (`audit/sample_selection.md`)
-
-```markdown
-# Sample selection
-
-## Items (quality)
-- Stratified random sample over `(batch_id, class, annotator_cohort)`.
-- 50 items per batch; at least 5 per class present in the batch.
-- RNG seed is recorded in the quarterly report.
-
-## Annotators (workforce)
-- Random 5% of annotators active on our program in the quarter.
-- Request is for **redacted** pay / hours — annotator identity is
-  never required; the vendor confirms the cohort size matches
-  payroll.
-
-## Batches (security + governance)
-- The most recent closed batch + one batch from the quarter's start
-  (bounds the window).
-- One batch where a canary-accuracy drop was logged (if any).
-```
-
-### 2.12 Canary protocol (`audit/canary_protocol.md`)
-
-```markdown
-# Canary protocol
-
-## Purpose
-The auditor controls the canary set independently of the ex-01
-canary rotation and can inject canaries without the vendor knowing
-which items are canaries.
-
-## Procedure
-1. Auditor prepares a canary set of N items with gold answers; items
-   are indistinguishable from production records (metadata routes
-   through the standard `source` key, without a canary marker in
-   the fields displayed to annotators).
-2. Auditor ingests canaries via the normal batch submission path.
-3. After batch close, auditor computes vendor accuracy on canaries
-   from the exported results.
-
-## Thresholds
-- **≥ 0.92 accuracy:** pass.
-- **0.85 – 0.92:** finding, "quality drift"; remediation within 30 days.
-- **< 0.85:** critical finding; batch returns for rework; vendor placed
-  on watch for the next quarter.
-```
-
-### 2.13 Interview questions (`audit/interview_questions.md`)
-
-Keep anonymised; the annotator should not be identifiable to the vendor
-after the interview. Ten representative prompts:
-
-```markdown
-1. How did you learn about this program? (Expect: vendor's platform.)
-2. How many hours did you work on this program in the last week?
-3. Have you ever used an external LLM to complete a task on this
-   program? Were you aware of a policy that forbids this?
-4. When you encountered content you did not want to label, were you
-   aware you could refuse? Did you refuse? What happened?
-5. What tools do you use on your workstation — is it VDI or your own
-   computer?
-6. Have you been paid on time for every pay period this quarter?
-7. Is your take-home pay sufficient for your local cost of living?
-8. Have you ever been reassigned to a different program against your
-   stated preference?
-9. Have you been asked to label content that felt outside the stated
-   scope of this program?
-10. Do you know how to reach a reporting channel outside your direct
-    manager? Have you ever used it?
-```
-
-The interviewer records answers without annotator identifiers; raw
-responses are retained for 90 days then destroyed.
-
-### 2.14 Findings template (`audit/findings_template.md`)
-
-```markdown
-# Finding <id>
-
-- **Date:** YYYY-MM-DD
-- **Section:** <RFP §x.y or audit scope item>
-- **Classification:** confirmed | refuted | inconclusive
-- **Severity:** informational | low | medium | high | critical
-- **Evidence refs:** <artifact paths / log IDs / interview summary IDs>
-- **Impact:** <paragraph — e.g., κ under-reporting masks batch failure>
-- **Remediation:** <paragraph with owner + deadline, tracked in `remediation_tracker.md`>
-- **Reviewer sign-off:** <name, UTC timestamp>
-```
+`worked_example/scorecard.md` applies the rubric and lands at a
+single recommendation (`continue-with-remediation`), citing the
+specific failing checks.
 
 ## 3. Validation steps
 
-1. **RFP is self-contained.** A fresh reader opens the `rfp/` tree
-   and can score a vendor response without a side-channel briefing.
-   Evidence requirements are concrete file types, not adjectives.
-2. **Weights sum to 100.** `yq '.[].weight'` across the rubric rows
-   (or simple arithmetic on the table) sums to 100.
-3. **Sections 3+4+5 dominate.** Combined weight ≥ 70 (quality +
-   workforce + security are the three load-bearing axes).
-4. **Eligibility is terminal, not weighted.** A §1.2 failure cannot
-   be offset by a strong §2 price.
-5. **Audit has a stable cadence and clear triggers.** `audit_plan.md`
-   names both quarterly and triggered audits; triggers are
-   observable events, not vibes.
-6. **Canary protocol is independent.** The auditor's canaries are
-   separate from the ex-01 program canaries; the vendor cannot
-   see-through a canary at label time.
-7. **Interview channel is independent.** The annotator-interview
-   contact point is not controlled by the vendor's account team.
-8. **Deletion witness exists.** The audit witnesses at least one
-   data-destruction event per quarter; a vendor that cannot
-   demonstrate destruction is a critical finding.
-9. **Findings are classified.** Every finding in the quarterly
-   report resolves to `confirmed | refuted | inconclusive`. A
-   "mostly yes" narrative is not a finding.
-10. **Remediation ages out.** `remediation_tracker.md` shows
-    deadline status; an item past 90 days with no owner is a
-    reportable escalation to the data-governance lead.
+1. **RFP version bumps are documented.** `grep "RFP version"
+   RFP.md` returns one SemVer string that equals
+   `audit_checklist.yaml`'s `rfp_version`. Mismatch fails
+   validation.
+2. **Every audit check has an RFP cross-reference.** `yq '.checks
+   | map(select(.rfp_ref == null)) | length'
+   audit_checklist.yaml` returns `0`.
+3. **Critical rows are covered in both artifacts.** For every
+   critical row in the scoring rubric, an entry with the same ask
+   exists in `audit_checklist.yaml`. Missing coverage fails
+   review.
+4. **PII clause is non-empty when PII is in scope.** If
+   `scope.pii` in the vendor's response is `true`, both the RFP
+   §4 answer and the matching `audit_checklist.yaml` entries
+   `data.pii_training` and `data.no_local_copy` must be
+   populated — a blank here is a response-breaking omission.
+5. **Dispute SLA ≤ 5 business days.** `grep "5 business days"
+   RFP.md` returns the dispute SLA line; weaker SLAs fail
+   validation.
+6. **Workforce welfare contact is a natural person.** The vendor
+   response names an individual, not an alias or a function
+   mailbox. If the worked example redacts the name, the redaction
+   itself must be flagged as redacted-for-review.
+7. **Security certifications are current.** Each cert name has a
+   non-null expiry date in the future.
+8. **Hand-off schema exercise.** A sample `vendor_batch.json`
+   round-trips through `jsonschema -i vendor_batch.json
+   task_record.schema.json` and exits 0.
+9. **No invented facts.** Any vendor name referenced in
+   `worked_example/` is clearly flagged as placeholder.
+   Specific statutory wages or jurisdictions cited elsewhere
+   carry a primary-source footnote in `rationale.md`; if no
+   primary source is yet at hand, leave the figure out rather
+   than invent one, and open a tracking item for the citation.
+10. **Audit is runnable by a peer.** A second engineer running
+    `AUDIT.md` against the worked example lands at the same
+    recommendation (`continue-with-remediation`) without
+    consulting the author.
 
 ## 4. Rubric or review checklist
 
-Score each row 0–2. Pass threshold: ≥ 24/32 with zero zeros on
-critical rows.
+Score each row 0–2 (0 = missing, 1 = present but shallow, 2 =
+defensible with evidence). Pass threshold: ≥ 20/28 with no zeros
+on critical rows.
 
-| #  | Dimension                                                                                                          | Critical? |
-|----|--------------------------------------------------------------------------------------------------------------------|-----------|
-| 1  | RFP sections 1–7 are drafted as runnable scorecards with explicit evidence requirements                             | Yes       |
-| 2  | Rubric weights sum to 100 and quality + workforce + security sum to ≥ 70                                            | Yes       |
-| 3  | Eligibility prerequisites are listed and marked terminal                                                            | Yes       |
-| 4  | Workforce section asks for pay, hours, right-to-refuse, and well-being — with evidence                              | Yes       |
-| 5  | No-training-on-our-data attestation is required and documented as MSA-binding                                       | Yes       |
-| 6  | Audit plan names quarterly + triggered cadence with concrete trigger events                                         | Yes       |
-| 7  | Canary protocol is independent of program canaries and uses a vendor-opaque injection path                          | Yes       |
-| 8  | Annotator interview channel is independent of the vendor account team                                               | Yes       |
-| 9  | Destruction / exit evidence is demonstrable (not merely attested)                                                   | Yes       |
-| 10 | Findings use a formal classification (confirmed/refuted/inconclusive) and severity scale                             | Yes       |
-| 11 | Remediation tracker has owners, deadlines, and an escalation path                                                   | Yes       |
-| 12 | Governance anchors (NIST AI RMF GOVERN 4.1 / MANAGE 3.1, OWASP ML02 / ML06, MITRE ATLAS AML.T0020 / T0010) cited     | No        |
-| 13 | AI-assistance policy (§6.5) asks for enforcement mechanism, not just a written statement                             | Yes       |
-| 14 | DPA / jurisdiction section (§6.1–6.3) binds cross-border transfer and age policy                                    | Yes       |
-| 15 | Sub-processor register is required and reviewed each quarter for deltas                                             | Yes       |
-| 16 | Exit section ensures schema-documented portability and deletion attestation                                         | No        |
+| #  | Dimension                                                                                                           | Critical? |
+|----|---------------------------------------------------------------------------------------------------------------------|-----------|
+| 1  | `RFP.md` has §1 scope, §2 workforce, §3 quality, §4 data, §5 security, §6 hand-off, §7 pricing, §8 response, §9 sig | Yes       |
+| 2  | `audit_checklist.yaml` has one entry per critical RFP ask with `rfp_ref` populated                                   | Yes       |
+| 3  | Hand-off clause binds vendor to `task_record.schema.json` and forbids custom fields                                 | Yes       |
+| 4  | Workforce-welfare contact is a natural person, not a function alias                                                  | Yes       |
+| 5  | Compensation attestation is required and has a measurable floor                                                     | Yes       |
+| 6  | PII clause is present and covers no-local-copy, encryption, retention                                               | Yes       |
+| 7  | Security certifications line names concrete certs (ISO 27001 / SOC 2 / equivalent)                                  | Yes       |
+| 8  | Incident-response SLA ≤ 72 hours                                                                                     | Yes       |
+| 9  | Dispute SLA ≤ 5 business days                                                                                        | Yes       |
+| 10 | Termination-for-cause triggers listed explicitly                                                                    | No        |
+| 11 | Scoring rubric uses 0/1/2 with critical-row zeros = auto-fail                                                       | Yes       |
+| 12 | Rationale log answers "what does this clause prevent" and "what weakens if dropped" per clause                      | Yes       |
+| 13 | Worked example runs end-to-end (RFP response → audit run → scorecard)                                               | Yes       |
+| 14 | Governance anchors (NIST AI RMF GOVERN 6.1 / 6.2, OWASP ML Top 10 ML02 / ML06, MITRE ATLAS AML.T0019) cited          | No        |
 
 ## 5. Common mistakes
 
-- **Asking vendors for *pricing* and calling it an RFP.** An RFP that
-  scores primarily on price selects for low-pay vendors and buys
-  insider-poisoning risk. Quality + workforce + security must
-  dominate the rubric.
-- **Accepting SOC 2 / ISO 27001 *in progress* as evidence.** Current
-  effective dates only. "In progress" is a schedule, not a control.
-- **Letting workforce questions be answered with marketing.** If a
-  pay-schedule row is answered by "competitive wages", score zero.
-  The RFP is evidence-driven.
-- **Omitting the no-training attestation.** A vendor that trains
-  on customer samples is a data-exfiltration path — the attestation
-  must be binding and audit-verifiable in the MSA.
-- **One-off audits.** A single audit cannot measure drift. Cadence
-  must be quarterly plus triggered; the trigger list must name
-  observable events, not sentiments.
-- **Using the vendor's own canary set for the audit.** A vendor who
-  curated the canaries can game canary accuracy. The auditor
-  controls the independent canary protocol.
-- **Interviewing annotators through the vendor's account team.**
-  Annotators cannot answer freely if their livelihood is on the
-  line with the person reading their answers.
-- **Treating "exit" as a legal appendix.** Portability is a
-  training-data continuity property; if the exit section is not
-  tested, the vendor becomes a lock-in.
-- **Scoring workforce alongside price.** Workforce is a safety and
-  quality control; mixing it into price invites gaming. Separate
-  weight, separate review.
-- **Skipping the enforcement-mechanism question on AI-assistance.**
-  Policy without enforcement is not policy; a reviewer who sees a
-  policy document without clipboard / DLP / monitoring evidence
-  scores that row zero.
-- **Letting a finding be "mostly good".** Every finding must
-  resolve to confirmed / refuted / inconclusive; qualitative
-  summaries lose their teeth over time.
-- **No remediation ownership.** An unowned remediation is an
-  unresolved risk; the tracker names an owner and a deadline or
-  the item is closed with a documented accept-risk.
+- **Letting the vendor set the hand-off format.** A vendor that
+  defines its own CSV or JSON export leaves the issuer carrying
+  the integration debt. Pin `task_record.schema.json` as the only
+  acceptable hand-off.
+- **Omitting workforce welfare.** A labeling program is a labour
+  program. An RFP that treats the workforce as a hidden
+  subprocess is a reputational and compliance risk; §2(d) and
+  §2(e) are not optional.
+- **Scoring with a single aggregate number.** A rubric that lets a
+  vendor pass by scoring high on "pricing clarity" while failing
+  "no local copies" is designed to let bad vendors through.
+  Critical-row zeros must be auto-fails.
+- **"Available on request" subprocessor lists.** The list is in
+  scope for the RFP; a lazy pointer to a web portal is not an
+  answer.
+- **Treating certifications as a yes/no.** Record the cert number
+  and expiry. An expired SOC 2 is worse than none because it
+  invites complacency.
+- **Writing the RFP without the audit.** The two must be written
+  together; if the audit cannot measure a clause, the clause is
+  aspirational, not operational.
+- **No termination-for-convenience path.** A program with no exit
+  ramp is a program the issuer is locked into when the vendor
+  starts missing SLAs.
+- **Citing specific vendor names without primary sources.** Any
+  named vendor in the worked example must be labelled as
+  placeholder, or carry a verifiable citation in `rationale.md`.
+- **Pre-signing the audit.** Audit sign-off is a separate function
+  from running the program; the auditor is not the ai-data-
+  engineer who authored the RFP.
 
 ## 6. References
 
-- **OWASP Machine Learning Security Top 10 — ML02:2023 Data Poisoning
-  Attack; ML06:2023 AI Supply Chain Attacks:**
+- **NIST AI Risk Management Framework — GOVERN 6.1 (third-party
+  data and software), GOVERN 6.2 (contingency processes for
+  third-party AI failures):**
+  <https://www.nist.gov/itl/ai-risk-management-framework>. The
+  governance anchors for an annotation-vendor relationship; the
+  RFP operationalises GOVERN 6.1 and the termination-for-cause
+  path operationalises GOVERN 6.2.
+- **OWASP Machine Learning Security Top 10 — ML02:2023 Data
+  Poisoning Attack, ML06:2023 ML Supply Chain Vulnerabilities:**
   <https://owasp.org/www-project-machine-learning-security-top-10/>.
-  Vendor compromise is the canonical supply-chain poisoning path.
-- **MITRE ATLAS — AML.T0020 Poison Training Data; AML.T0010 ML
-  Supply Chain Compromise:** <https://atlas.mitre.org/>.
-  Adversary techniques the RFP eligibility prerequisites and
-  canary protocol are designed to deny.
-- **NIST AI Risk Management Framework — GOVERN 4.1 (accountability
-  and oversight); MANAGE 3.1 (third-party risk):**
-  <https://www.nist.gov/itl/ai-risk-management-framework>. Anchors
-  the formal third-party oversight responsibility.
-- **ISO/IEC 27001:2022** (information-security management systems)
-  and **SOC 2 Type II** — the two certifications the §5.1 evidence
-  requirement accepts. Issuance within the last 12 months is the
-  control for currency.
-- **NIST SP 800-88 Rev. 1** — media sanitisation reference for the
-  §5.5 destruction SOP and the audit's destruction-witness event.
-- **Partnership on AI — Responsible Sourcing of Data Enrichment
-  Services:** practitioner guidance on workforce ethics the
-  workforce section draws on; useful starting point for the
-  living-wage benchmark question in §4.2. Use a current, named
-  benchmark (e.g., MIT Living Wage Calculator for US jurisdictions)
-  rather than the vendor's self-selected one.
-- **Local anchors:** `mod-107` ex-01 (program policy note and
-  taxonomy the RFP attaches); `mod-107` ex-03 (κ / α computation
-  the audit re-runs on sampled items); `mod-101` ex-04/ex-05
-  (GDPR/CCPA lawful-basis gate the DPA question depends on);
-  `mod-109` (lineage signing of the batch exports the vendor
-  produces); `mod-110` (PII handling within the labeling pipeline).
+  ML06 is the direct anchor (the vendor is the supply chain);
+  ML02 is the downstream harm the audit is designed to prevent.
+- **MITRE ATLAS — AML.T0019 Publish Poisoned Datasets:**
+  <https://atlas.mitre.org/>. The adversary-facing technique for
+  a hostile or compromised vendor.
+- **ISO/IEC 27001 and SOC 2 Type II:** these are the concrete
+  certification regimes the RFP §5 names. The RFP does not
+  require a specific regime; it requires one that is in force,
+  dated, and auditable.
+- **Local anchors:** Exercise 01 (`task_record.schema.json` is
+  the hand-off format §6 binds the vendor to); Exercise 03 (the
+  IAA baseline §3(a) commits the vendor to); Exercise 04 (active-
+  learning queue depends on the vendor honouring §3 quality
+  commitments); `mod-106` exercise-04 (the measurement-surface
+  table shape this RFP reuses); `mod-109` (records the vendor
+  attestations in lineage); `mod-110` (PII clause §4 defers to
+  `mod-110`'s PII evaluation).

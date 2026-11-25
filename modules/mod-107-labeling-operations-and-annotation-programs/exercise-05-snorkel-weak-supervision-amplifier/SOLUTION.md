@@ -1,61 +1,82 @@
 # Exercise 05 — Snorkel Weak-Supervision Amplifier (Solution)
 
+> **Exercise-prompt note.** The paired learning file
+> (`exercise-05-snorkel-weak-supervision-amplifier.md`) is not
+> visible from the solutions repo at generation time. This
+> solution is grounded in the exercise title, the module README,
+> and the official sources cited in §6 (Ratner et al. "Snorkel"
+> 2017 / 2020 and the Snorkel project documentation). Any
+> divergence from the exercise prompt once it is pinned should
+> re-ground against those sources.
+> <!-- pending-verify: re-check against the exercise prompt once
+> the learning file is reachable to confirm label-schema choices
+> and the hand-off format for the amplified labels. -->
+
 ## 1. Solution overview
 
 This is an **implementation** exercise. The learner builds a
-Snorkel-style weak-supervision pipeline that **amplifies** a small
-human-labeled slice into a large probabilistically-labeled training
-set, then measures whether the amplifier helps. The deliverable is
-not a label matrix: it is an auditable pipeline whose outputs the
-rest of the data engineering stack can sign (dataset card, lineage
-manifest) and whose quality can be defended end-to-end.
+**Snorkel weak-supervision pipeline** that amplifies a small
+human-labeled seed into a large probabilistically-labeled
+training set. The deliverable is a label matrix, a trained
+`LabelModel`, probabilistic labels over the unlabeled pool, and
+an `amplification_report.yaml` that records the LF-analysis
+numbers (coverage, overlap, conflict, polarity, empirical
+accuracy) that make weak-supervision outputs reviewable.
 
-Core concepts:
+Snorkel's contract (per Ratner et al.):
 
-- **Labeling functions (LFs)** are small Python functions that
-  return one of `{POSITIVE, NEGATIVE, ABSTAIN}` on an example.
-  Each LF is a weak signal — heuristics, keyword rules, regexes,
-  lookup against a gazetteer, or an external classifier.
-- The **label model** reads the LF matrix and estimates each
-  example's class probability by learning LF accuracies and
-  pairwise correlations from the agreement/disagreement pattern
-  — *without* using ground-truth labels at fit time.
-- The resulting **probabilistic labels** become the training set
-  for an **end-model** (the "noise-aware" classifier). The
-  end-model is evaluated against a held-out human-labeled dev
-  set that was *not* used to write the LFs.
+- A set of **labeling functions (LFs)**, each noisy and limited-
+  coverage, votes on each data point.
+- A **label model** learns per-LF accuracies and correlations
+  from the **pattern of agreements and disagreements** — not
+  from the gold labels. A small gold development set (dev) is
+  used only to evaluate.
+- The label model outputs **probabilistic labels** over the
+  unlabeled pool. A downstream classifier ("end model") is
+  trained on these soft labels.
 
 Deliverables:
 
-- An **LF policy note** pinned before any LF is written —
-  taxonomy, LF naming convention, abstain contract, how LFs are
-  reviewed, how LF drift is detected.
-- A versioned **`labeling_functions/` directory** with ≥ 5
-  independent LFs and per-LF unit tests.
-- A **label-model fit script** that produces a reproducible
-  `lf_summary.parquet` (per-LF coverage, overlaps, conflicts,
-  learned accuracy) and `probabilistic_labels.parquet` for the
-  unlabeled pool.
-- An **end-model benchmark** that compares three training
-  regimes on the same architecture and dev set:
-  1. `human_only` — train on the small human slice;
-  2. `ws_only` — train on Snorkel probabilistic labels only;
-  3. `ws_then_human` — train on probabilistic labels, fine-tune
-     on the human slice.
-- A `report.md` that states whether weak supervision helps for
-  this task at this budget, and if so by how much, with
-  confidence intervals over seeds.
+- `code/lfs.py` — the labeling functions. One function per LF,
+  each cites the heuristic (regex, keyword list, model
+  prediction) and declares an explicit abstain contract.
+- `code/label_matrix.py` — applies LFs to the unlabeled pool;
+  writes `L_train.npy`.
+- `code/label_model.py` — fits Snorkel's `LabelModel` on
+  `L_train` and emits `prob_labels.parquet`.
+- `code/analysis.py` — LF analysis (coverage, overlaps,
+  conflicts, polarity); against a small `dev` set, per-LF
+  empirical accuracy.
+- `code/end_model.py` — a cheap classifier trained on soft
+  labels; reports held-out accuracy and macro-F1 as the
+  downstream check.
+- `code/report.py` — emits `amplification_report.yaml`.
+- `tests/test_lfs.py` — contract tests on every LF (returns one
+  of `{-1, 0, 1, ...}`, no side effects, deterministic).
+- `outputs/` — `L_train.npy`, `prob_labels.parquet`,
+  `lf_analysis.csv`, `amplification_report.yaml`, end-model
+  metrics.
 
-Governance framing. Weak supervision introduces **synthetic labels**
-into the training set — the control anchor is **NIST AI RMF MAP 2.3**
-(scientific integrity of training data; a weak-supervision derived
-label must be documented as such) combined with **MEASURE 2.3**
-(measured as intended; the dev set must stay untouched). The
-adversary-facing anchor is **OWASP ML Top 10 ML02:2023 Data
-Poisoning** — a compromised LF is a bulk-poisoning vector because
-one bad heuristic can relabel millions of rows — and **MITRE ATLAS
-AML.T0020 Poison Training Data**. The pipeline must log every LF's
-provenance so a poisoned LF can be identified and reversed.
+Governance framing. Weak supervision amplifies a small signal
+into a large signal; failure modes include systematic bias from
+a popular LF, correlated LFs that collectively mislead the
+label model, and the illusion of coverage when most LFs abstain.
+
+- OWASP Machine Learning Security Top 10 anchor: **ML02:2023
+  Data Poisoning Attack** — a rogue LF (or a cohort of
+  correlated LFs reflecting the same bias) poisons training.
+- MITRE ATLAS techniques: **AML.T0020 Poison Training Data**
+  (downstream harm), **AML.T0043 Craft Adversarial Data**
+  (attacker crafts items that satisfy a biased LF to pull
+  training signal).
+- NIST AI RMF controls: **MEASURE 2.3** (performance measured
+  as intended) — LF-analysis numbers are the measurement
+  surface; **MEASURE 2.11** (fairness and bias) — per-slice
+  LF accuracy is what distinguishes amplification from
+  bias-magnification.
+
+Cite the framework URLs rather than paraphrasing the control
+text.
 
 ## 2. Implementation — worked answer
 
@@ -66,376 +87,206 @@ exercise-05/
 ├── README.md
 ├── requirements.lock
 ├── Makefile
-├── policy_note.md                  # pinned before any LF is written
-├── labeling_functions/
-│   ├── __init__.py
-│   ├── lf_keyword_profanity.py
-│   ├── lf_regex_url.py
-│   ├── lf_length_short.py
-│   ├── lf_gazetteer_brand.py
-│   ├── lf_distilbert_pretrained.py # external classifier LF
-│   └── tests/
-│       ├── test_lf_keyword_profanity.py
-│       └── ...
 ├── code/
-│   ├── apply_lfs.py                # builds LF matrix
-│   ├── fit_label_model.py          # Snorkel label model → probabilistic labels
-│   ├── train_end_model.py          # end-model training; three regimes
-│   ├── evaluate.py                 # dev-set evaluation with seed CIs
-│   ├── emit_dataset_card.py        # dataset card for probabilistic labels
-│   └── emit_report.py
-├── data/
-│   ├── human_slice.jsonl           # ≤ 500 human-labeled items
-│   ├── unlabeled_pool.jsonl        # ≥ 20,000 items
-│   ├── dev.jsonl                   # held-out human-labeled, LF-blinded
-│   └── test.jsonl                  # held-out human-labeled, for final number
-└── results/
-    ├── lf_matrix.parquet
-    ├── lf_summary.parquet
-    ├── probabilistic_labels.parquet
-    ├── metrics.parquet
-    ├── dataset_card.md
-    └── report.md
+│   ├── lfs.py
+│   ├── label_matrix.py
+│   ├── label_model.py
+│   ├── analysis.py
+│   ├── end_model.py
+│   └── report.py
+├── configs/
+│   └── experiment.yaml
+├── tests/
+│   └── test_lfs.py
+└── outputs/
+    ├── L_train.npy
+    ├── prob_labels.parquet
+    ├── lf_analysis.csv
+    ├── end_model_metrics.json
+    └── amplification_report.yaml
 ```
 
-### 2.3 `policy_note.md` — pin this before LF development
+### 2.2 `configs/experiment.yaml`
 
-```markdown
-# Weak-supervision policy — program <program-id>
-
-**Decision date:** 2026-11-18
-**Author:** <operator email>
-
-## Task and taxonomy
-- Binary classification (POSITIVE / NEGATIVE) on <task-domain>.
-  See taxonomy from mod-107 ex-01.
-- LFs return `{POSITIVE, NEGATIVE, ABSTAIN}`; multi-class tasks
-  decompose into per-class binary LF stacks.
-
-## LF authoring rules
-- Each LF lives in its own `.py` file named `lf_<reason>.py`.
-- Each LF has at least one unit test asserting its behaviour on a
-  worked example per output class.
-- LF coverage, individual accuracy on a held-out dev-LF slice (separate
-  from `dev.jsonl`), and conflict rate with every other LF are logged
-  at `lf_summary.parquet` and reviewed before fitting the label model.
-- **Dev/test blindness:** No LF may be tuned using `dev.jsonl` or
-  `test.jsonl`. LF development uses `data/human_slice.jsonl` only.
-
-## Review and provenance
-- Every LF commit names an author and an intent; LFs that are later
-  removed must be removed with a commit that says *why*.
-- Pretrained-classifier LFs name the model, version, and source URL
-  in the LF docstring. A model-weights change requires a new LF file
-  with a bumped version suffix; the old file remains in git for
-  traceability.
-- Gazetteer LFs commit the gazetteer alongside the LF under
-  `labeling_functions/gazetteers/`; gazetteer updates follow the same
-  LF-provenance rules.
-
-## Label-model decisions
-- Expected class balance is set from the human slice's class rate and
-  recorded in `policy_note.md`; changing it invalidates the fit.
-- Probabilistic labels below a chosen confidence are either dropped
-  or retained with a sample weight equal to `max(p) - 0.5` (chosen in
-  the fit script; whichever is used is documented here).
-
-## Adversarial controls
-- Any LF whose learned accuracy is below 0.5 is **not** silently
-  down-weighted; it is quarantined (moved to `labeling_functions/quarantined/`)
-  and reviewed. A systematically-wrong LF is as informative as a
-  noisy-correct one and may indicate corruption of its inputs.
-- Gazetteer and keyword LFs include an SHA-256 of their inputs in
-  the LF summary so a swap is detectable.
+```yaml
+experiment_id: mod-107-ex-05-run-1
+seed: 20261117
+task:
+  name: topic_classification
+  classes: ["policy", "technical", "product", "other"]
+  class_index:
+    policy: 0
+    technical: 1
+    product: 2
+    other: 3
+  abstain_value: -1
+dataset:
+  unlabeled_pool_path: data/pool.parquet
+  dev_path:            data/dev.parquet     # small gold dev set
+  test_path:           data/test.parquet    # held-out evaluation
+  text_field: text
+  label_field: topic
+label_model:
+  cardinality: 4
+  epochs: 500
+  lr: 0.01
+  l2: 0.0
+end_model:
+  kind: logistic_regression_bow
+  max_features: 20000
+  C: 1.0
 ```
 
-Commit `policy_note.md` in its own commit before any LF; `git log
---follow` trail is the audit evidence.
+### 2.3 `code/lfs.py`
 
-### 2.4 `labeling_functions/__init__.py` — registry
+Each LF is intentionally narrow and returns one of
+`{abstain, class_index}`. The point of writing many narrow LFs
+is to let the label model see the pattern of agreements across
+them. A single wide LF is a hand-written classifier; it is not
+a weak-supervision workflow.
 
 ```python
-# labeling_functions/__init__.py
-# A small registry so LFs can be enumerated in a stable order.
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Callable
-
-ABSTAIN = -1
-NEGATIVE = 0
-POSITIVE = 1
-
-
-@dataclass(frozen=True)
-class LF:
-    name: str
-    version: str        # bump when semantics change
-    func: Callable[[dict], int]
-    source: str = ""    # e.g., git URL + commit SHA of a model
-```
-
-### 2.5 Example LFs
-
-```python
-# labeling_functions/lf_keyword_profanity.py
-from __future__ import annotations
-
-import hashlib
-import json
-from pathlib import Path
-
-from . import LF, POSITIVE, ABSTAIN
-
-GAZETTEER = Path(__file__).parent / "gazetteers" / "profanity_en.txt"
-GAZETTEER_SHA = hashlib.sha256(GAZETTEER.read_bytes()).hexdigest()
-
-
-_WORDS = {w.strip().lower() for w in GAZETTEER.read_text().splitlines() if w.strip()}
-
-
-def _apply(x: dict) -> int:
-    tokens = x["text"].lower().split()
-    return POSITIVE if any(t in _WORDS for t in tokens) else ABSTAIN
-
-
-lf_keyword_profanity = LF(
-    name="lf_keyword_profanity", version="1.0",
-    func=_apply,
-    source=f"gazetteer_sha256={GAZETTEER_SHA}",
-)
-```
-
-```python
-# labeling_functions/lf_regex_url.py
+# code/lfs.py
+# Labeling functions for topic classification.
+# Each LF takes one record and returns either an integer class
+# index or `ABSTAIN` (-1). LFs are pure, deterministic, and side-
+# effect-free; the test suite proves it.
 from __future__ import annotations
 
 import re
+from typing import Callable
 
-from . import LF, POSITIVE, ABSTAIN
-
-_URL = re.compile(r"https?://\S{10,}", re.IGNORECASE)
-
-
-def _apply(x: dict) -> int:
-    # Heuristic: outbound links in short-form text correlate with POSITIVE
-    # in this task; defensible only against a dev-LF slice (see policy).
-    return POSITIVE if _URL.search(x["text"]) else ABSTAIN
+ABSTAIN = -1
+POLICY, TECHNICAL, PRODUCT, OTHER = 0, 1, 2, 3
 
 
-lf_regex_url = LF(name="lf_regex_url", version="1.0", func=_apply)
+# ---- Regex / keyword LFs --------------------------------------
+
+_POLICY_RE = re.compile(r"\b(policy|regulation|compliance|gdpr|statute)\b",
+                        re.IGNORECASE)
+_TECH_RE = re.compile(r"\b(kubernetes|python|latency|throughput|p99|p95)\b",
+                      re.IGNORECASE)
+_PRODUCT_RE = re.compile(r"\b(feature|roadmap|customer|ux|user[\s-]facing)\b",
+                         re.IGNORECASE)
+
+
+def lf_policy_regex(x: dict) -> int:
+    return POLICY if _POLICY_RE.search(x["text"]) else ABSTAIN
+
+
+def lf_technical_regex(x: dict) -> int:
+    return TECHNICAL if _TECH_RE.search(x["text"]) else ABSTAIN
+
+
+def lf_product_regex(x: dict) -> int:
+    return PRODUCT if _PRODUCT_RE.search(x["text"]) else ABSTAIN
+
+
+# ---- Short-text and long-text heuristics ----------------------
+
+def lf_short_boilerplate_other(x: dict) -> int:
+    return OTHER if len(x["text"].split()) < 15 else ABSTAIN
+
+
+def lf_contains_code_block(x: dict) -> int:
+    # A document with a triple-backtick code block is probably technical.
+    return TECHNICAL if "```" in x["text"] else ABSTAIN
+
+
+# ---- Weak-model LF --------------------------------------------
+
+def make_lf_from_prelabel(predicted_class: Callable[[str], int],
+                           confidence_threshold: float,
+                           confidence_scorer: Callable[[str], float]) -> Callable:
+    """Wrap an external classifier as an LF. If the classifier's
+    confidence is above `confidence_threshold`, return its class;
+    otherwise abstain. Separate `predicted_class` and
+    `confidence_scorer` keep the wrapper framework-agnostic.
+    """
+    def lf(x: dict) -> int:
+        score = confidence_scorer(x["text"])
+        if score < confidence_threshold:
+            return ABSTAIN
+        return predicted_class(x["text"])
+    lf.__name__ = "lf_prelabel_wrapper"
+    return lf
+
+
+# ---- Canonical LF list ----------------------------------------
+
+LFS: list[Callable[[dict], int]] = [
+    lf_policy_regex,
+    lf_technical_regex,
+    lf_product_regex,
+    lf_short_boilerplate_other,
+    lf_contains_code_block,
+]
 ```
 
-```python
-# labeling_functions/lf_length_short.py
-from __future__ import annotations
+Design notes defensible at review:
 
-from . import LF, NEGATIVE, ABSTAIN
+- **Each LF is pure and deterministic.** No `requests.get()`, no
+  random, no stateful counters. If an LF needs an external model,
+  it must be deterministic under its inputs; the wrapper in
+  `make_lf_from_prelabel` requires a passed-in callable so the
+  LF code itself stays pure.
+- **`ABSTAIN` is `-1`, matching Snorkel's convention.** A
+  reviewer should not have to think about label-value
+  collisions with real class indices; `-1` is the Snorkel
+  convention across the library.
+- **Keyword regexes are narrow.** A regex that matches "user"
+  anywhere is unreviewable. The regex vocabulary is a committed
+  artifact; adding a term is a diff-reviewable change.
+- **The weak-model LF wrapper separates class from confidence.**
+  A single-model LF can miscalibrate badly on new slices; the
+  confidence gate lets reviewers tune it without rewriting the
+  LF.
 
-
-def _apply(x: dict) -> int:
-    # Very short texts tend NEGATIVE in this task. Reasonable upstream
-    # bias prior; weaker signal than the keyword LF.
-    return NEGATIVE if len(x["text"].split()) < 5 else ABSTAIN
-
-
-lf_length_short = LF(name="lf_length_short", version="1.0", func=_apply)
-```
-
-```python
-# labeling_functions/lf_distilbert_pretrained.py
-from __future__ import annotations
-
-from functools import lru_cache
-from pathlib import Path
-
-from transformers import pipeline
-
-from . import LF, NEGATIVE, POSITIVE, ABSTAIN
-
-MODEL_ID = "distilbert-base-uncased-finetuned-sst-2-english"
-MODEL_REV = "714eb0f"  # pinned commit; bump requires a new LF version
-
-@lru_cache(maxsize=1)
-def _model():
-    return pipeline("text-classification", model=MODEL_ID, revision=MODEL_REV)
-
-
-def _apply(x: dict) -> int:
-    out = _model()(x["text"][:512])[0]
-    if out["score"] < 0.8:
-        return ABSTAIN
-    return POSITIVE if out["label"] == "POSITIVE" else NEGATIVE
-
-
-lf_distilbert_pretrained = LF(
-    name="lf_distilbert_pretrained", version="1.0",
-    func=_apply,
-    source=f"huggingface:{MODEL_ID}@{MODEL_REV}",
-)
-```
-
-Design points defensible at review:
-
-- **Each LF is its own file.** A monolithic `lfs.py` makes LF
-  provenance (who added, when, why) harder to read in git; the
-  one-file-per-LF rule enforces traceability.
-- **LFs that use external artefacts (gazetteers, pretrained models)
-  pin and hash those artefacts.** A gazetteer swap is a bulk
-  poisoning path.
-- **LFs abstain often; silence is cheaper than wrong.** The label
-  model weights an LF by its learned accuracy and coverage;
-  low-accuracy LFs that abstain less can be more harmful than
-  low-accuracy LFs that abstain more.
-
-### 2.6 `code/apply_lfs.py` — build the LF matrix
+### 2.4 `code/label_matrix.py`
 
 ```python
-# code/apply_lfs.py
+# code/label_matrix.py
+# Apply LFs to the unlabeled pool; emit L_train as a numpy array.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
+import pandas as pd
 
-from labeling_functions import LF
-from labeling_functions.lf_keyword_profanity import lf_keyword_profanity
-from labeling_functions.lf_regex_url import lf_regex_url
-from labeling_functions.lf_length_short import lf_length_short
-from labeling_functions.lf_gazetteer_brand import lf_gazetteer_brand
-from labeling_functions.lf_distilbert_pretrained import lf_distilbert_pretrained
+from lfs import LFS
 
 
-LFS: list[LF] = [
-    lf_keyword_profanity,
-    lf_regex_url,
-    lf_length_short,
-    lf_gazetteer_brand,
-    lf_distilbert_pretrained,
-]
-
-
-def apply_to_pool(pool_path: Path, out_path: Path) -> np.ndarray:
-    rows = [json.loads(line) for line in pool_path.read_text().splitlines()]
-    L = np.full((len(rows), len(LFS)), fill_value=-1, dtype=np.int8)
-    for j, lf in enumerate(LFS):
-        for i, rec in enumerate(rows):
-            L[i, j] = int(lf.func(rec))
-    tbl = pa.table(
-        {"example_id": [r.get("id", str(i)) for i, r in enumerate(rows)]}
-        | {lf.name: L[:, j] for j, lf in enumerate(LFS)}
-    )
-    pq.write_table(tbl, out_path)
-    return L
+def apply_lfs(records: list[dict]) -> np.ndarray:
+    mat = np.full((len(records), len(LFS)), fill_value=-1, dtype=np.int8)
+    for i, rec in enumerate(records):
+        for j, lf in enumerate(LFS):
+            mat[i, j] = lf(rec)
+    return mat
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pool", required=True, type=Path)
-    ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--out",  required=True, type=Path)
     args = ap.parse_args()
-    L = apply_to_pool(args.pool, args.out)
-    print(json.dumps({
-        "n_examples": int(L.shape[0]),
-        "n_lfs": int(L.shape[1]),
-        "coverage_per_lf": {
-            LFS[j].name: float((L[:, j] != -1).mean())
-            for j in range(L.shape[1])
-        },
-    }, indent=2))
-
-
-if __name__ == "__main__":
-    main()
+    df = pd.read_parquet(args.pool)
+    records = df.to_dict(orient="records")
+    L = apply_lfs(records)
+    np.save(args.out, L)
 ```
 
-### 2.7 `code/fit_label_model.py`
+### 2.5 `code/analysis.py`
+
+LF analysis is the review surface for weak supervision. Coverage
+and conflict numbers that look reasonable in aggregate can hide
+a single LF that dominates a slice.
 
 ```python
-# code/fit_label_model.py
-from __future__ import annotations
-
-import argparse
-import json
-from pathlib import Path
-
-import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
-from snorkel.labeling.model import LabelModel
-from snorkel.labeling import LFAnalysis
-
-from labeling_functions import POSITIVE, NEGATIVE
-
-
-def fit(matrix_path: Path, class_balance: list[float],
-        out_labels: Path, out_summary: Path, seed: int) -> dict:
-    tbl = pq.read_table(matrix_path)
-    L = np.stack([tbl.column(name).to_numpy() for name in tbl.column_names
-                   if name != "example_id"], axis=1)
-    lf_names = [n for n in tbl.column_names if n != "example_id"]
-
-    label_model = LabelModel(cardinality=2, verbose=False, device="cpu")
-    label_model.fit(L_train=L, class_balance=class_balance,
-                    n_epochs=500, seed=seed, log_freq=100, lr=0.01)
-
-    probs = label_model.predict_proba(L)  # (N, 2)
-    pq.write_table(pa.table({
-        "example_id": tbl.column("example_id"),
-        "prob_negative": probs[:, 0],
-        "prob_positive": probs[:, 1],
-    }), out_labels)
-
-    analysis = LFAnalysis(L=L).lf_summary()
-    analysis.reset_index().rename(columns={"index": "lf_name"}) \
-            .to_parquet(out_summary, index=False)
-
-    return {
-        "lf_names": lf_names,
-        "mean_probability_high": float((probs.max(axis=1) >= 0.7).mean()),
-    }
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--matrix", required=True, type=Path)
-    ap.add_argument("--class-balance", nargs=2, type=float, required=True,
-                    help="Class balance for [NEGATIVE, POSITIVE], from policy_note.md.")
-    ap.add_argument("--seed", type=int, required=True)
-    ap.add_argument("--out-labels", required=True, type=Path)
-    ap.add_argument("--out-summary", required=True, type=Path)
-    args = ap.parse_args()
-    info = fit(args.matrix, args.class_balance, args.out_labels,
-                args.out_summary, args.seed)
-    print(json.dumps(info, indent=2))
-
-
-if __name__ == "__main__":
-    main()
-```
-
-Design notes defensible at review:
-
-- **`class_balance` comes from the human slice, pinned in
-  `policy_note.md`.** The label model is *identifiable only up to
-  class label order* without the balance; getting the balance wrong
-  flips the output class interpretation on borderline examples.
-- **`seed` is a required argument.** Snorkel's label-model fit is
-  stochastic; fixing the seed is the reproducibility knob.
-- **`LFAnalysis.lf_summary()` is persisted.** The coverage,
-  overlap, conflict, and learned accuracy table is the artifact
-  reviewers scrutinise before accepting the probabilistic labels.
-
-### 2.8 `code/train_end_model.py`
-
-Three regimes on the same architecture:
-
-```python
-# code/train_end_model.py
+# code/analysis.py
+# Coverage, overlap, conflict, polarity per LF. Against a dev set,
+# empirical accuracy per LF.
 from __future__ import annotations
 
 import argparse
@@ -444,206 +295,504 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
-import torch
-import torch.nn as nn
+
+from label_matrix import apply_lfs
+from lfs import LFS
 
 
-def train(regime: str, human_path: Path, probabilistic_path: Path,
-          dev_path: Path, seed: int) -> dict:
-    """regime ∈ {human_only, ws_only, ws_then_human}."""
-    torch.manual_seed(seed)
-    # ... load tf-idf features x and labels y for each slice;
-    # for ws_only, use soft-label cross-entropy (BCEWithLogitsLoss with
-    # target = prob_positive); for ws_then_human, pretrain on ws then
-    # fine-tune on human with a lower learning rate.
-    #
-    # Return a dict with the dev metric and a confusion matrix.
-    ...
+def lf_analysis(L: np.ndarray) -> pd.DataFrame:
+    n, m = L.shape
+    rows = []
+    for j in range(m):
+        votes = L[:, j]
+        active = votes != -1
+        coverage = float(active.mean())
+        polarity = sorted(set(int(v) for v in votes[active])) if active.any() else []
+        # Overlap: active AND any other LF active on same item.
+        other_active = (L != -1)
+        other_active[:, j] = False
+        overlap = float((active & other_active.any(axis=1)).mean())
+        # Conflict: active AND any other LF disagrees on same item.
+        if active.any():
+            conflict_mask = np.zeros(n, dtype=bool)
+            for k in range(m):
+                if k == j:
+                    continue
+                other = L[:, k]
+                conflict_mask |= active & (other != -1) & (other != votes)
+            conflict = float(conflict_mask.mean())
+        else:
+            conflict = 0.0
+        rows.append({
+            "lf": LFS[j].__name__,
+            "coverage": coverage,
+            "overlap":  overlap,
+            "conflict": conflict,
+            "polarity": polarity,
+        })
+    return pd.DataFrame(rows)
+
+
+def empirical_accuracy(L_dev: np.ndarray, y_dev: np.ndarray) -> pd.DataFrame:
+    rows = []
+    for j in range(L_dev.shape[1]):
+        votes = L_dev[:, j]
+        active = votes != -1
+        if not active.any():
+            rows.append({"lf": LFS[j].__name__, "empirical_accuracy": float("nan"),
+                          "support": 0})
+            continue
+        acc = float((votes[active] == y_dev[active]).mean())
+        rows.append({"lf": LFS[j].__name__, "empirical_accuracy": acc,
+                      "support": int(active.sum())})
+    return pd.DataFrame(rows)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--L-train", required=True, type=Path)
+    ap.add_argument("--dev",      required=True, type=Path,
+                    help="Parquet with text + label (gold) columns")
+    ap.add_argument("--class-index-json", required=True, type=Path)
+    ap.add_argument("--out",      required=True, type=Path)
+    args = ap.parse_args()
+    L = np.load(args.L_train)
+    stats = lf_analysis(L)
+    dev = pd.read_parquet(args.dev)
+    class_index = json.loads(args.class_index_json.read_text())
+    L_dev = apply_lfs(dev.to_dict(orient="records"))
+    y_dev = dev["label"].map(class_index).astype(np.int64).to_numpy()
+    acc = empirical_accuracy(L_dev, y_dev)
+    merged = stats.merge(acc, on="lf", how="left")
+    merged.to_csv(args.out, index=False)
 ```
 
-### 2.9 `code/emit_dataset_card.py`
+### 2.6 `code/label_model.py`
 
-A Snorkel-produced dataset is a *synthetic* dataset in the mod-108
-sense; it must ship with a dataset card. Fields to include:
+```python
+# code/label_model.py
+# Train Snorkel's LabelModel on L_train. Emit probabilistic
+# labels over the pool.
+from __future__ import annotations
 
-- Task statement, class taxonomy, class balance (from the human slice).
-- The list of LFs with version strings and provenance sources.
-- Label-model `class_balance` input and fit seed.
-- LF summary table excerpt (coverage, conflict, learned accuracy).
-- Explicit statement: "Labels are probabilistic; a confidence
-  column is provided. This dataset is not a human-labeled gold
-  reference and must not be used as such for evaluation."
+import argparse
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from snorkel.labeling.model import LabelModel  # official Snorkel SDK
+
+
+def train_label_model(L_train: np.ndarray, *, cardinality: int,
+                       epochs: int, lr: float, l2: float,
+                       seed: int) -> LabelModel:
+    lm = LabelModel(cardinality=cardinality, verbose=False)
+    lm.fit(L_train=L_train, n_epochs=epochs, lr=lr, l2=l2, seed=seed)
+    return lm
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--L-train", required=True, type=Path)
+    ap.add_argument("--pool",    required=True, type=Path)
+    ap.add_argument("--cardinality", type=int, required=True)
+    ap.add_argument("--epochs",  type=int, default=500)
+    ap.add_argument("--lr",      type=float, default=0.01)
+    ap.add_argument("--l2",      type=float, default=0.0)
+    ap.add_argument("--seed",    type=int, default=20261117)
+    ap.add_argument("--out",     required=True, type=Path)
+    args = ap.parse_args()
+    L = np.load(args.L_train)
+    lm = train_label_model(L, cardinality=args.cardinality,
+                            epochs=args.epochs, lr=args.lr, l2=args.l2,
+                            seed=args.seed)
+    probs = lm.predict_proba(L=L)
+    pool = pd.read_parquet(args.pool)
+    out = pool.copy()
+    for k in range(probs.shape[1]):
+        out[f"p_class_{k}"] = probs[:, k]
+    out.to_parquet(args.out, index=False)
+```
+
+Design notes:
+
+- **Label model trains on `L_train` only.** It does not see gold
+  labels during fit; the development set is for evaluation and
+  for `LabelModel.score()` after training. A label model that
+  was fit against gold is a supervised classifier, not a weak-
+  supervision model.
+- **Seed is fixed.** Snorkel's `LabelModel` exposes a `seed` to
+  `fit()`; pin it so the amplification is reproducible.
+- **Cardinality must match the task.** A mismatch silently
+  corrupts the probability distribution; `cardinality` in the
+  config is the authoritative source and the end model reads
+  the same value.
+
+### 2.7 `code/end_model.py`
+
+```python
+# code/end_model.py
+# A cheap downstream classifier trained on Snorkel's probabilistic
+# labels. Reports held-out accuracy and macro-F1 against the test set.
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+
+
+def _hard_labels(probs: np.ndarray) -> np.ndarray:
+    return probs.argmax(axis=1)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--prob-labels", required=True, type=Path)
+    ap.add_argument("--test",        required=True, type=Path)
+    ap.add_argument("--class-index-json", required=True, type=Path)
+    ap.add_argument("--max-features", type=int, default=20000)
+    ap.add_argument("--C",            type=float, default=1.0)
+    ap.add_argument("--seed",         type=int, default=20261117)
+    ap.add_argument("--filter-abstain-threshold", type=float, default=None,
+                    help="If set, drop rows whose max class prob is below this.")
+    ap.add_argument("--out", required=True, type=Path)
+    args = ap.parse_args()
+
+    train_df = pd.read_parquet(args.prob_labels)
+    prob_cols = [c for c in train_df.columns if c.startswith("p_class_")]
+    probs = train_df[prob_cols].to_numpy()
+    if args.filter_abstain_threshold is not None:
+        keep = probs.max(axis=1) >= args.filter_abstain_threshold
+        train_df = train_df.loc[keep].reset_index(drop=True)
+        probs = probs[keep]
+    y_train = _hard_labels(probs)
+
+    pipe = Pipeline([
+        ("tfidf", TfidfVectorizer(max_features=args.max_features,
+                                   ngram_range=(1, 2),
+                                   sublinear_tf=True)),
+        ("lr", LogisticRegression(C=args.C, max_iter=500,
+                                   random_state=args.seed, n_jobs=1)),
+    ])
+    pipe.fit(train_df["text"].tolist(), y_train)
+
+    test_df = pd.read_parquet(args.test)
+    class_index = json.loads(args.class_index_json.read_text())
+    y_test = test_df["label"].map(class_index).astype(np.int64).to_numpy()
+    pred = pipe.predict(test_df["text"].tolist())
+    acc = float((pred == y_test).mean())
+    # Macro-F1
+    labs = sorted(set(y_test.tolist()) | set(pred.tolist()))
+    f1s = []
+    for c in labs:
+        tp = int(((pred == c) & (y_test == c)).sum())
+        fp = int(((pred == c) & (y_test != c)).sum())
+        fn = int(((pred != c) & (y_test == c)).sum())
+        if tp == 0:
+            f1s.append(0.0)
+            continue
+        p = tp / (tp + fp)
+        r = tp / (tp + fn)
+        f1s.append(2 * p * r / (p + r))
+    macro_f1 = float(np.mean(f1s)) if f1s else 0.0
+    args.out.write_text(json.dumps({"accuracy": acc, "macro_f1": macro_f1},
+                                     indent=2, sort_keys=True))
+```
+
+### 2.8 `code/report.py`
+
+```python
+# code/report.py
+# Emit amplification_report.yaml.
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import socket
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+import yaml
+
+
+def sha256_file(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--experiment-id", required=True)
+    ap.add_argument("--operator", required=True)
+    ap.add_argument("--config", required=True, type=Path)
+    ap.add_argument("--lf-analysis", required=True, type=Path)
+    ap.add_argument("--prob-labels", required=True, type=Path)
+    ap.add_argument("--end-metrics", required=True, type=Path)
+    ap.add_argument("--run-start-utc", required=True)
+    ap.add_argument("--output", required=True, type=Path)
+    args = ap.parse_args()
+
+    analysis = pd.read_csv(args.lf_analysis).to_dict(orient="records")
+    prob = pd.read_parquet(args.prob_labels)
+    prob_cols = [c for c in prob.columns if c.startswith("p_class_")]
+
+    import numpy as np
+    maxp = prob[prob_cols].to_numpy().max(axis=1)
+
+    git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+    report = {
+        "experiment_id": args.experiment_id,
+        "toolchain": {
+            "name": "mod-107-exercise-05-snorkel",
+            "git_sha": git_sha,
+            "config_sha256": sha256_file(args.config),
+            "prob_labels_sha256": sha256_file(args.prob_labels),
+            "lf_analysis_sha256": sha256_file(args.lf_analysis),
+        },
+        "operator": args.operator,
+        "run_start_utc": args.run_start_utc,
+        "run_end_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "compute_shape": {"host": socket.gethostname()},
+        "lf_analysis": analysis,
+        "confidence_distribution": {
+            "p_ge_0.5":  float((maxp >= 0.5).mean()),
+            "p_ge_0.7":  float((maxp >= 0.7).mean()),
+            "p_ge_0.9":  float((maxp >= 0.9).mean()),
+        },
+        "end_model_metrics": json.loads(args.end_metrics.read_text()),
+        "peer_review": {
+            "status": "pending_review",
+            "reviewer": None,
+            "signed_at_utc": None,
+        },
+    }
+    args.output.write_text(yaml.safe_dump(report, sort_keys=False))
+    print(json.dumps({"report_sha256": sha256_file(args.output)}, indent=2))
+```
+
+### 2.9 `tests/test_lfs.py`
+
+```python
+# tests/test_lfs.py
+# Contract tests for every LF: pure, deterministic, returns either
+# an integer class index in [0, cardinality) or the abstain sentinel.
+from __future__ import annotations
+
+import pytest
+
+from code.lfs import ABSTAIN, LFS
+
+
+@pytest.mark.parametrize("lf", LFS)
+def test_lf_is_pure(lf) -> None:
+    # Two calls on the same input return the same value.
+    rec = {"text": "GDPR compliance review of the roadmap feature"}
+    assert lf(rec) == lf(rec)
+
+
+@pytest.mark.parametrize("lf", LFS)
+def test_lf_returns_valid_label(lf) -> None:
+    rec = {"text": "some sample text"}
+    v = lf(rec)
+    assert v == ABSTAIN or (isinstance(v, int) and v >= 0)
+```
 
 ### 2.10 `Makefile`
 
 ```makefile
-.PHONY: all apply fit train evaluate card report test clean
+.PHONY: all test matrix analysis label_model end_model report clean
 
-all: apply fit train evaluate card report
-
-apply:
-	python code/apply_lfs.py --pool data/unlabeled_pool.jsonl \
-		--out results/lf_matrix.parquet
-
-fit:
-	python code/fit_label_model.py --matrix results/lf_matrix.parquet \
-		--class-balance 0.6 0.4 --seed 20261118 \
-		--out-labels results/probabilistic_labels.parquet \
-		--out-summary results/lf_summary.parquet
-
-train:
-	python code/train_end_model.py \
-		--regimes human_only ws_only ws_then_human \
-		--seeds 20261118 20261119 20261120 \
-		--out results/metrics.parquet
-
-evaluate:
-	python code/evaluate.py --metrics results/metrics.parquet \
-		--out results/metrics_summary.parquet
-
-card:
-	python code/emit_dataset_card.py --lf-summary results/lf_summary.parquet \
-		--labels results/probabilistic_labels.parquet \
-		--policy policy_note.md \
-		--out results/dataset_card.md
-
-report:
-	python code/emit_report.py --metrics results/metrics_summary.parquet \
-		--out results/report.md
+all: test matrix analysis label_model end_model report
 
 test:
-	pytest -q
+	pytest -q tests/
+
+matrix:
+	python code/label_matrix.py \
+	  --pool data/pool.parquet --out outputs/L_train.npy
+
+analysis:
+	python code/analysis.py \
+	  --L-train outputs/L_train.npy \
+	  --dev data/dev.parquet \
+	  --class-index-json configs/class_index.json \
+	  --out outputs/lf_analysis.csv
+
+label_model:
+	python code/label_model.py \
+	  --L-train outputs/L_train.npy \
+	  --pool data/pool.parquet \
+	  --cardinality 4 --epochs 500 --lr 0.01 --l2 0.0 \
+	  --out outputs/prob_labels.parquet
+
+end_model:
+	python code/end_model.py \
+	  --prob-labels outputs/prob_labels.parquet \
+	  --test data/test.parquet \
+	  --class-index-json configs/class_index.json \
+	  --out outputs/end_model_metrics.json
+
+report:
+	python code/report.py \
+	  --experiment-id mod-107-ex-05-run-1 \
+	  --operator $$(git config user.email) \
+	  --config configs/experiment.yaml \
+	  --lf-analysis outputs/lf_analysis.csv \
+	  --prob-labels outputs/prob_labels.parquet \
+	  --end-metrics outputs/end_model_metrics.json \
+	  --run-start-utc $$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+	  --output outputs/amplification_report.yaml
 
 clean:
-	rm -rf results/*.parquet results/*.md
+	rm -rf outputs/
 ```
+
+### 2.11 Interpreting the report
+
+Four signals a reviewer reads before signing off:
+
+1. **Coverage sum vs effective coverage.** Summed coverage can
+   exceed 1.0 (LFs overlap); effective coverage is the fraction
+   of pool items where at least one LF is active. A pipeline
+   with effective coverage below ~50% is not amplifying much;
+   either add LFs or accept a smaller training set.
+2. **Per-LF empirical accuracy vs support.** An LF with 0.95
+   accuracy on 10 dev items is noise; the same accuracy on 1000
+   items is signal. The analysis table reports both.
+3. **Conflict rate.** High conflict (>30%) with low empirical
+   accuracy on the top conflicting LF is a sign that the LF is
+   systematically biased. The label model can correct for
+   accuracy, but it can't correct for a confidently wrong LF
+   whose errors are correlated with content.
+4. **End-model gain vs no-LF baseline.** The end-model accuracy
+   should exceed the accuracy of a model trained on the dev
+   gold labels alone. If it doesn't, weak supervision is not
+   paying for itself on this task.
 
 ## 3. Validation steps
 
-1. **Policy predates LFs.** `git log --follow policy_note.md | tail -1`
-   returns a commit older than any `labeling_functions/*.py`. A
-   retro-fitted policy fails review.
-2. **Dev / test blindness.** `git grep -n 'dev.jsonl' labeling_functions/`
-   returns no hits (LF code never reads dev/test slices).
-3. **Per-LF unit tests pass.** `pytest labeling_functions/tests -q`
-   exits 0.
-4. **LF summary is persisted.** `results/lf_summary.parquet` contains
-   `coverage, overlaps, conflicts, learned_accuracy` for every LF;
-   the tool reads it and prints a human-readable table for review.
-5. **Label-model fit is deterministic.** `make clean && make fit`
-   twice; `sha256sum results/probabilistic_labels.parquet` is stable.
-6. **Class balance is pinned.** The `--class-balance` passed to the
-   fit matches the value documented in `policy_note.md`; a mismatch
-   is a CI failure.
-7. **End-model benchmark is run across ≥ 3 seeds.** `metrics.parquet`
-   has ≥ 3 rows per regime; the summary reports mean and CI.
-8. **ws_only is not evaluated on probabilistic labels.** Dev-metric
-   computation uses only human-labeled dev examples; probabilistic
-   labels never enter the metric.
-9. **Low-accuracy LFs are quarantined, not down-weighted silently.**
-   An LF whose learned accuracy is < 0.5 triggers a job failure that
-   points the operator at the quarantined directory.
-10. **Dataset card ships with every run.** `results/dataset_card.md`
-    exists and lists every LF's version and provenance; a missing
-    card blocks downstream mod-109 lineage.
-11. **Report is honest about outcome.** If `ws_then_human ≤
-    human_only` within CI, the report says "weak supervision does
-    not help at this budget", with the numbers to back it; it does
-    not post a selective result.
+1. **LF contract tests pass.** `pytest -q tests/` exits 0.
+   Any failure is a regression in the LF contract.
+2. **`L_train` is deterministic.** `python code/label_matrix.py`
+   twice on the same pool → byte-identical `.npy`.
+3. **Label model is seeded.** `grep "seed=" code/label_model.py`
+   returns the config's seed; two runs produce identical
+   `prob_labels.parquet`.
+4. **LF analysis has one row per LF.** `wc -l
+   outputs/lf_analysis.csv` equals `len(LFS) + 1` (header).
+5. **No LF operates on non-pool inputs during analysis.**
+   `analysis.py` reads `pool` and `dev` only.
+6. **Confidence distribution reported.** The report's
+   `confidence_distribution` keys cover 0.5 / 0.7 / 0.9 floors.
+   A pipeline whose p ≥ 0.9 bucket is empty is not confident
+   anywhere; this must be visible, not hidden.
+7. **End-model gain measured.** `end_model.py` reports both
+   accuracy and macro-F1 on the test set; compare against a
+   dev-only baseline (train the end model on dev labels alone
+   for the comparison).
+8. **Hand-off to downstream training uses `prob_labels.parquet`
+   OR hard argmax.** The pipeline documents which was chosen;
+   using argmax is defensible but discards calibration signal.
+9. **`peer_review.status` defaults to `pending_review`.**
+10. **No gold labels in `L_train`.** The gold `dev` set is never
+    concatenated with the pool; a leak here invalidates both
+    the LabelModel fit and the end-model evaluation.
 
 ## 4. Rubric or review checklist
 
-Score each row 0–2. Pass threshold: ≥ 24/32 with zero zeros on
-critical rows.
+Score each row 0–2 (0 = missing, 1 = present but shallow, 2 =
+defensible with evidence). Pass threshold: ≥ 20/28 with zero
+zeros on critical rows.
 
-| #  | Dimension                                                                                                          | Critical? |
-|----|--------------------------------------------------------------------------------------------------------------------|-----------|
-| 1  | `policy_note.md` predates all LFs; versioned in git                                                                | Yes       |
-| 2  | ≥ 5 LFs, each in its own file, each with a unit test                                                                | Yes       |
-| 3  | LFs return `{POSITIVE, NEGATIVE, ABSTAIN}`; abstain is the explicit silent return                                   | Yes       |
-| 4  | External artefact LFs pin version + content hash (gazetteers, pretrained models)                                   | Yes       |
-| 5  | Dev / test slices are LF-blind (no LF reads them)                                                                   | Yes       |
-| 6  | Label-model `class_balance` comes from the human slice and is pinned in the policy                                  | Yes       |
-| 7  | Label-model fit is seeded and byte-reproducible                                                                     | Yes       |
-| 8  | LF summary (coverage / overlap / conflict / accuracy) persisted and reviewed                                        | Yes       |
-| 9  | End-model benchmark runs three regimes (human_only, ws_only, ws_then_human) across ≥ 3 seeds                        | Yes       |
-| 10 | Dev metric is computed only on human-labeled items                                                                  | Yes       |
-| 11 | Low-accuracy LF handling (< 0.5): quarantine + manual review, no silent down-weight                                 | Yes       |
-| 12 | Dataset card emitted with LF provenance, label-model config, and the "probabilistic, not gold" statement             | Yes       |
-| 13 | Report states outcome honestly, including "WS does not help" if the data says so                                    | Yes       |
-| 14 | Governance anchors (NIST AI RMF MAP 2.3 / MEASURE 2.3, OWASP ML02, MITRE ATLAS AML.T0020) cited                      | No        |
-| 15 | Deterministic re-run (`make clean && make all` twice) produces byte-identical results modulo wall-clock              | Yes       |
-| 16 | Gazetteer / keyword LFs log input SHAs; swap is detectable                                                          | Yes       |
+| #  | Dimension                                                                                                           | Critical? |
+|----|---------------------------------------------------------------------------------------------------------------------|-----------|
+| 1  | Every LF is pure, deterministic, and uses `-1` as the abstain sentinel                                              | Yes       |
+| 2  | At least three LFs; at least one keyword-based, at least one length/structure-based, and one model-wrapper          | Yes       |
+| 3  | Label model trained on `L_train` only (no gold labels in fit)                                                       | Yes       |
+| 4  | LF analysis emits coverage, overlap, conflict, polarity, empirical accuracy, support per LF                         | Yes       |
+| 5  | Confidence distribution over pool items reported in the report                                                      | Yes       |
+| 6  | End-model gain over dev-only baseline reported                                                                       | Yes       |
+| 7  | Seeded Snorkel `LabelModel.fit` with a documented seed                                                               | Yes       |
+| 8  | `cardinality` sourced from a single config, not duplicated across files                                             | Yes       |
+| 9  | Dev / pool / test splits do not overlap                                                                             | Yes       |
+| 10 | `prob_labels.parquet` keeps per-class probabilities, not just argmax                                                 | No        |
+| 11 | Hand-off format to `mod-108` / downstream training documented                                                        | No        |
+| 12 | Governance anchors (OWASP ML Top 10 ML02, MITRE ATLAS AML.T0020 / T0043, NIST AI RMF MEASURE 2.3 / 2.11) cited        | No        |
+| 13 | `peer_review.status` defaults to `pending_review`                                                                    | Yes       |
+| 14 | LF analysis is signed by a peer (`mod-105` ex-05 convention) before the amplified set enters training                | Yes       |
 
 ## 5. Common mistakes
 
-- **Writing LFs against the dev or test slice.** This is the single
-  biggest trap. Every "look at where the model fails" session on
-  dev data turns into an LF that pattern-matches dev, inflating
-  reported numbers. LFs are developed on the human *training*
-  slice only.
-- **Hand-weighting LFs.** The label model learns weights from the
-  LF matrix; a hand-picked `weight=0.3` on an LF whose data says
-  `0.7` is just noise. Trust the label model or write a better LF.
-- **Treating ABSTAIN as "the LF didn't vote".** ABSTAIN is a
-  first-class return and is modelled as such; the LF matrix
-  encodes it explicitly. Replacing ABSTAIN with 0 or the majority
-  class hard-biases the label-model fit.
-- **Picking `class_balance` from a vibe.** Use the measured balance
-  from the human slice; if that slice is small, say so and bound
-  the class_balance by its CI.
-- **Evaluating on probabilistic labels.** The dev metric uses
-  human labels. If probabilistic labels appear in the dev
-  denominator, the number is self-congratulation.
-- **Skipping the end-model comparison.** A high LF accuracy does
-  not entail that an end-model trained on probabilistic labels
-  beats one trained on the small human slice. Measure it.
-- **Not pinning pretrained-model LFs.** `distilbert-...-finetuned-sst-2-english`
-  has multiple revisions; without a pinned commit, the LF drifts
-  silently.
-- **Monolithic LF module.** A single file with 20 LFs has worthless
-  git blame; move to one file per LF.
-- **Silently keeping an LF with learned accuracy < 0.5.** A
-  consistently-wrong LF is *informative* only if its sign is
-  flipped by you intentionally. Silent down-weighting hides the
-  underlying bug.
-- **Skipping the dataset card.** Downstream (mod-109) will refuse
-  the artefact without a card. Treat the card as part of the
-  pipeline, not documentation.
+- **Writing one wide LF.** A single LF that classifies every
+  item without abstaining is a hand-coded classifier; the
+  label model has nothing to learn from.
+- **Fitting the LabelModel on gold labels.** That is supervised
+  learning. Snorkel's contract is that the fit sees only the
+  LFs' votes.
+- **Not reporting empirical accuracy with support.** 95%
+  accuracy on 10 items is marketing; 85% on 1000 is a working
+  LF.
+- **Hiding abstain rate.** If half the pool has every LF
+  abstaining, the amplified set is half the pool; silently
+  dropping those items without reporting the rate is a bug.
+- **Shipping probabilistic labels as argmax without a floor.**
+  Low-confidence items (max p < 0.5) often add noise to the end
+  model; filter them or weight by confidence.
+- **Not evaluating the end model on a held-out test.** The whole
+  point of the amplification is a better downstream model;
+  measure it against a test set the LabelModel never saw.
+- **Correlated LFs treated as independent signal.** Two
+  near-identical LFs (same keyword list, different regex)
+  double-count that signal. Check conflict / overlap, and
+  consider using Snorkel's dependency-aware label model if
+  correlations are known.
+- **Missing a seed on `LabelModel.fit`.** Snorkel fits a
+  logistic model under the hood; without a seed the probs
+  shift run-to-run and the amplified set is non-deterministic.
+- **Skipping the dev-only baseline.** Without a baseline you
+  cannot show weak supervision is paying for itself.
 
 ## 6. References
 
-- **NIST AI Risk Management Framework — MAP 2.3, MEASURE 2.3:**
-  <https://www.nist.gov/itl/ai-risk-management-framework>. MAP 2.3
-  anchors scientific integrity (document probabilistic labels as
-  probabilistic); MEASURE 2.3 anchors the dev-blind metric.
+- **Ratner, A. et al. (2017). "Snorkel: Rapid Training Data
+  Creation with Weak Supervision." _VLDB 2017_.**
+  <https://www.vldb.org/pvldb/vol11/p269-ratner.pdf>. Primary
+  source for the labeling-function / label-model /
+  end-model pipeline and the agreement/disagreement signal the
+  label model fits.
+- **Snorkel project documentation:**
+  <https://www.snorkel.org/> and
+  <https://snorkel.readthedocs.io/>. Primary source for the
+  `LabelModel` API, LF analysis helpers, and the `-1` abstain
+  convention.
 - **OWASP Machine Learning Security Top 10 — ML02:2023 Data
   Poisoning Attack:**
   <https://owasp.org/www-project-machine-learning-security-top-10/>.
-  A compromised LF is bulk poisoning; LF provenance is the
-  detection control.
-- **MITRE ATLAS — AML.T0020 Poison Training Data:**
-  <https://atlas.mitre.org/>. The adversary-facing anchor.
-- **Ratner, A., Bach, S. H., Ehrenberg, H., Fries, J., Wu, S., &
-  Ré, C. (2017) "Snorkel: Rapid Training Data Creation with Weak
-  Supervision."** VLDB 2017. The label-model + end-model approach
-  this exercise implements.
-- **Fu, D. Y., Chen, M. F., Sala, F., Hooper, S. M., Fatahalian,
-  K., & Ré, C. (2020) "Fast and Three-rious: Speeding Up Weak
-  Supervision with Triplet Methods."** ICML 2020. Background on
-  the label-model fit algorithm.
-- **Snorkel documentation — LabelModel and LFAnalysis:**
-  <https://www.snorkel.org/use-cases/>. The reference for
-  `LabelModel.fit`, `predict_proba`, and `LFAnalysis.lf_summary`.
-- **HuggingFace `transformers` pipeline:**
-  <https://huggingface.co/docs/transformers/main_classes/pipelines>.
-  The API the pretrained-classifier LF calls.
-- **Local anchors:** `mod-107` ex-01 (the labeling policy whose
-  taxonomy the LFs honour and whose human slice is the LF
-  development set); `mod-107` ex-03 (IAA on the human slice —
-  which gates whether the slice is clean enough to anchor a WS
-  class-balance estimate); `mod-108` (synthetic-data generation,
-  where probabilistic labels are documented as a related but
-  distinct category); `mod-109` (lineage + dataset-card signing
-  for the amplified dataset).
+  Governance anchor — a biased LF is a poisoning channel.
+- **MITRE ATLAS — AML.T0020 Poison Training Data,
+  AML.T0043 Craft Adversarial Data:**
+  <https://atlas.mitre.org/>. Adversary-facing anchors.
+- **NIST AI Risk Management Framework — MEASURE 2.3 (performance
+  as intended), MEASURE 2.11 (fairness and bias):**
+  <https://www.nist.gov/itl/ai-risk-management-framework>.
+  Governance anchors for the LF-analysis measurement surface
+  and per-slice accuracy.
+- **scikit-learn user guide — `LogisticRegression`,
+  `TfidfVectorizer`, `Pipeline`:**
+  <https://scikit-learn.org/stable/user_guide.html>. Primary
+  source for the end-model choice.
+- **Local anchors:** Exercise 01 (`task_record.schema.json`
+  carries the LF output and gold labels through the same
+  pipeline); Exercise 03 (IAA on the gold dev set); Exercise
+  04 (active learning as the alternative labeling-cost
+  strategy); `mod-108` (consumes the probabilistic labels as
+  synthetic-labeled training data); `mod-111` (trends LF
+  analysis numbers across weekly reruns).

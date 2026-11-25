@@ -11,3 +11,4 @@
 | 2026-11-16 | `fill-mod-101-ai-data-governance-and-position-solutions` | `mod-101-ai-data-governance-and-position` | Fill mod-101-ai-data-governance-and-position module exercise solutions |
 | 2026-11-17 | `fill-mod-106-benchmark-contamination-and-decontamination-solutions` | `mod-106-benchmark-contamination-and-decontamination` | Fill mod-106-benchmark-contamination-and-decontamination module exercise solutions |
 | 2026-11-18 | `fill-mod-107-labeling-operations-and-annotation-programs-solutions` | `mod-107-labeling-operations-and-annotation-programs` | Fill mod-107-labeling-operations-and-annotation-programs module exercise solutions |
+| 2026-11-19 | `fill-mod-108-synthetic-data-generation-at-production-scale-solutions` | `mod-108-synthetic-data-generation-at-production-scale` | Fill mod-108-synthetic-data-generation-at-production-scale module exercise solutions |
