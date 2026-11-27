@@ -15,3 +15,4 @@
 | 2026-11-22 | `fill-mod-107-labeling-operations-and-annotation-programs-solutions` | `mod-107-labeling-operations-and-annotation-programs` | Fill mod-107-labeling-operations-and-annotation-programs module exercise solutions |
 | 2026-11-25 | `fill-mod-110-pii-and-privacy-risk-for-training-data-solutions` | `mod-110-pii-and-privacy-risk-for-training-data` | Fill mod-110-pii-and-privacy-risk-for-training-data module exercise solutions |
 | 2026-11-26 | `fill-mod-111-data-quality-monitoring-and-regression-solutions` | `mod-111-data-quality-monitoring-and-regression` | Fill mod-111-data-quality-monitoring-and-regression module exercise solutions |
+| 2026-11-27 | `fill-mod-112-cross-functional-data-program-and-communication-solutions` | `mod-112-cross-functional-data-program-and-communication` | Fill mod-112-cross-functional-data-program-and-communication module exercise solutions |
