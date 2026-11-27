@@ -654,7 +654,7 @@ checks are mechanical.
    Lead) or (b) the role appears in `countersigned_by`. A column that
    neither signs nor sits inside SRDE is dead weight.
 9. **Partner-team count.** §4 must list at least 4 partner teams.
-   Count the `### 4\.\d+ ` headings; fewer than 4 is a fail.
+   Count the `### 4\.\d+` headings; fewer than 4 is a fail.
 10. **Non-goals count.** §8 must list at least 5 refusals. Count
     bullet lines after the `## 8\. Non-goals` heading; fewer than 5
     is a fail.
